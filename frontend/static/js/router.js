@@ -51,10 +51,10 @@
     scrollToTop();
     $$('.page').forEach(page => page.classList.toggle('active-page', page.id === `${name}-page`));
     $$('.nav-item').forEach(button => button.classList.toggle('active', button.dataset.page === name));
-    const titles = { dashboard: ['OPERAÇÃO LOCAL', 'Dashboard'], monitoring: ['ESTUDOS RECEBIDOS', 'Monitoramento'], queue: ['STORE AND FORWARD', 'Fila de transmissão'], dicom: ['RECEPÇÃO DICOM', 'DICOM local'], modalities: ['NÓS REMOTOS', 'Modalidades'], destinations: ['TRANSMISSÃO SEGURA', 'VOXEL Cloud e destinos'], logs: ['OBSERVABILIDADE', 'Logs e auditoria'], settings: ['ADMINISTRAÇÃO', 'Configurações'] };
+    const titles = { dashboard: ['OPERAÇÃO LOCAL', 'Dashboard'], monitoring: ['ESTUDOS RECEBIDOS', 'Monitoramento'], queue: ['STORE AND FORWARD', 'Fila de transmissão'], dicom: ['RECEPÇÃO DICOM', 'DICOM local'], modalities: ['NÓS REMOTOS', 'Modalidades'], destinations: ['TRANSMISSÃO SEGURA', 'VOXEL Cloud e destinos'], 'non-dicom': ['INTEGRAÇÃO', 'Non-DICOM Integration'], logs: ['OBSERVABILIDADE', 'Logs e auditoria'], settings: ['ADMINISTRAÇÃO', 'Configurações'] };
     $('#page-kicker').textContent = titles[name][0];
     $('#page-title').textContent = titles[name][1];
-    ({ dashboard: loadDashboard, monitoring: loadStudies, queue: loadQueue, dicom: loadDicom, modalities: loadModalities, destinations: loadDestinations, logs: loadLogs, settings: loadSettings }[name])?.();
+    ({ dashboard: loadDashboard, monitoring: loadStudies, queue: loadQueue, dicom: loadDicom, modalities: loadModalities, destinations: loadDestinations, 'non-dicom': loadNonDicom, logs: loadLogs, settings: loadSettings }[name])?.();
     requestAnimationFrame(scrollToTop);
   }
 
@@ -133,9 +133,10 @@
       const { health, queue } = state.system;
       $('#router-id').textContent = `Router ID: ${state.system.router_id}`;
       $('#router-status').textContent = `ROUTER ${health.router.status}`;
-      const services = [['ROUTER', health.router.status], ['ORTHANC', health.orthanc.status], ['VOXEL CLOUD', health.cloud.status], ['DICOM SCP', health.dicom.status]];
+      const services = [['ROUTER', health.router.status], ['ORTHANC', health.orthanc.status], ['VOXEL CLOUD', health.cloud.status], ['DICOM SCP', health.dicom.status], ['NON-DICOM', health.non_dicom?.service || 'OFFLINE']];
       $('#health-cards').innerHTML = services.map(([name, value]) => `<article class="health-card ${/OFFLINE|ERROR|DISCONNECTED/.test(value) ? 'error' : /WARNING/.test(value) ? 'warning' : ''}"><p>${name}</p><strong><span class="status-dot ${/ONLINE|CONNECTED|LISTENING/.test(value) ? 'online' : ''}"></span> ${escapeHtml(value)}</strong></article>`).join('');
-      const metrics = [['RECEBIDOS', queue.received], ['PENDENTES', queue.pending], ['ENVIANDO', queue.sending], ['ENVIADOS', queue.sent], ['ERROS', queue.errors], ['AGUARDANDO RETRY', queue.retry]];
+      const nonDicomStats = health.non_dicom?.stats || {};
+      const metrics = [['RECEBIDOS', queue.received], ['PENDENTES', queue.pending], ['ENVIANDO', queue.sending], ['ENVIADOS', queue.sent], ['ERROS', queue.errors], ['AGUARDANDO RETRY', queue.retry], ['NON-DICOM PENDENTES', nonDicomStats.pending || 0], ['NON-DICOM PROCESSANDO', nonDicomStats.processing || 0], ['NON-DICOM FALHOS', nonDicomStats.failed || 0]];
       $('#metric-cards').innerHTML = metrics.map(([name, value]) => `<article class="metric-card"><p>${name}</p><strong>${Number(value).toLocaleString('pt-BR')}</strong></article>`).join('');
       $('#network-health').innerHTML = Object.entries(health.network).map(([name, value]) => `<div class="health-row"><span>${escapeHtml(name.replaceAll('_', ' ').toUpperCase())}</span><span class="${value !== 'OK' ? 'offline' : ''}">● ${escapeHtml(value)}</span></div>`).join('');
       const storage = health.storage;
@@ -155,6 +156,21 @@
   async function loadQueue() {
     const rows = await api('/api/queue');
     $('#queue-table').innerHTML = rows.length ? rows.map(item => `<tr><td>${labels[item.priority]}</td><td title="${escapeHtml(item.study_instance_uid)}">${escapeHtml(item.study_instance_uid).slice(0, 24)}…</td><td>${escapeHtml(item.destination_name)}</td><td>${badge(item.status)}</td><td>${item.attempt_count}</td><td>${escapeHtml(item.next_attempt_at)}</td><td><div class="action-group">${item.status === 'PAUSED' ? `<button class="secondary" data-queue-action="resume" data-id="${item.id}">RETOMAR</button>` : `<button class="secondary" data-queue-action="pause" data-id="${item.id}">PAUSAR</button>`}<button class="secondary" data-queue-action="retry" data-id="${item.id}">REENVIAR</button><button class="secondary" data-queue-action="cancel" data-id="${item.id}">CANCELAR</button></div></td></tr>`).join('') : '<tr><td colspan="7" class="empty-cell">A fila está vazia.</td></tr>';
+  }
+
+  async function loadNonDicom() {
+    try {
+      const [status, config, queue, history] = await Promise.all([api('/api/non-dicom/status'), api('/api/non-dicom/config'), api('/api/non-dicom/queue'), api('/api/non-dicom/history')]);
+      const values = [['SERVIÇO', status.service], ['DIRETÓRIO', status.directory], ['VOXEL PACS', status.voxel_pacs], ['PROCESSADOR', status.processor]];
+      $('#non-dicom-health').innerHTML = values.map(([name, value]) => `<article class="health-card ${/OFFLINE|ERROR|DISCONNECTED/.test(value) ? 'error' : ''}"><p>${name}</p><strong><span class="status-dot ${/ONLINE|OK|CONFIGURED/.test(value) ? 'online' : ''}"></span> ${escapeHtml(value)}</strong></article>`).join('');
+      const stats = status.stats || {};
+      $('#non-dicom-metrics').innerHTML = [['RECEBIDOS', stats.received], ['PENDENTES', stats.pending], ['PROCESSANDO', stats.processing], ['CONCLUÍDOS', stats.completed], ['FALHOS', stats.failed], ['RETRY', stats.retry]].map(([name, value]) => `<article class="metric-card"><p>${name}</p><strong>${Number(value || 0).toLocaleString('pt-BR')}</strong></article>`).join('');
+      $('#non-dicom-details').innerHTML = [['Diretório raiz', status.directory === 'OK' ? config.root_path || 'Padrão ProgramData' : 'Erro de diretório'], ['Última sincronização', status.last_synchronization || '—'], ['Último arquivo recebido', status.last_file_received || '—'], ['Último processamento', status.last_processing || '—']].map(([key, value]) => `<div><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd></div>`).join('');
+      const form = $('#non-dicom-config');
+      for (const [key, value] of Object.entries(config)) { if (form.elements[key] && key !== 'voxel_pacs_token') form.elements[key].type === 'checkbox' ? form.elements[key].checked = Boolean(value) : form.elements[key].value = value ?? ''; }
+      $('#non-dicom-queue-table').innerHTML = queue.length ? queue.map(row => `<tr><td>${badge(row.status)}</td><td>${escapeHtml(row.patient_id)}</td><td>${escapeHtml(row.accession_number)}</td><td>${escapeHtml(row.file_name)}</td><td>${escapeHtml(row.modality)}</td><td>${row.attempt_count}</td><td>${escapeHtml(row.last_error || '—')}</td><td><div class="action-group"><button class="secondary" data-non-dicom-xml="${escapeHtml(row.id)}">VER XML</button><button class="secondary" data-non-dicom-folder="${escapeHtml(row.id)}">ABRIR PASTA</button><button class="secondary" data-non-dicom-retry="${escapeHtml(row.id)}">REPROCESSAR</button></div></td></tr>`).join('') : '<tr><td colspan="8" class="empty-cell">Nenhuma tarefa pendente.</td></tr>';
+      $('#non-dicom-history-table').innerHTML = history.length ? history.map(row => `<tr><td>${badge(row.status)}</td><td>${escapeHtml(row.accession_number)}</td><td>${escapeHtml(row.file_name)}</td><td>${escapeHtml(row.completed_at || '—')}</td></tr>`).join('') : '<tr><td colspan="4" class="empty-cell">Nenhum processamento concluído.</td></tr>';
+    } catch (error) { console.error(error); }
   }
 
   async function loadDicom() {
@@ -246,6 +262,13 @@
     });
     $$('.nav-item').forEach(button => button.addEventListener('click', () => visiblePage(button.dataset.page)));
     $('#refresh-dashboard').addEventListener('click', loadDashboard);
+    $('#non-dicom-refresh').addEventListener('click', loadNonDicom);
+    $('#non-dicom-test').addEventListener('click', () => api('/api/non-dicom/test', { method: 'POST' }).then(result => { alert(`Diretório: ${result.directory}\nVOXEL PACS: ${result.connection.status}`); loadNonDicom(); }).catch(error => alert(error.message)));
+    $('#non-dicom-test-directory').addEventListener('click', () => api('/api/non-dicom/test', { method: 'POST' }).then(result => alert(`Diretório: ${result.directory}\n${result.root_path}`)).catch(error => alert(error.message)));
+    $('#non-dicom-process').addEventListener('click', () => api('/api/non-dicom/process', { method: 'POST' }).then(loadNonDicom).catch(error => alert(error.message)));
+    $('#non-dicom-retry-all').addEventListener('click', () => { if (confirm('Reprocessar todas as tarefas Non-DICOM que falharam?')) api('/api/non-dicom/retry-all', { method: 'POST' }).then(loadNonDicom).catch(error => alert(error.message)); });
+    $('#non-dicom-queue-table').addEventListener('click', event => { const target = event.target; const submissionId = target.dataset.nonDicomRetry; if (submissionId) api(`/api/non-dicom/retry/${submissionId}`, { method: 'POST' }).then(loadNonDicom).catch(error => alert(error.message)); if (target.dataset.nonDicomXml) api(`/api/non-dicom/${target.dataset.nonDicomXml}/xml`).then(xml => alert(xml)).catch(error => alert(error.message)); if (target.dataset.nonDicomFolder) api(`/api/non-dicom/${target.dataset.nonDicomFolder}/open-folder`, { method: 'POST' }).catch(error => alert(error.message)); });
+    $('#non-dicom-config').addEventListener('submit', event => { event.preventDefault(); const form = new FormData(event.target); const token = String(form.get('voxel_pacs_token') || ''); const values = Object.fromEntries(form); delete values.voxel_pacs_token; ['polling_interval_seconds', 'max_attempts', 'max_file_size_mb', 'timeout_seconds'].forEach(key => values[key] = Number(values[key])); values.delete_file_after_success = form.get('delete_file_after_success') === 'on'; api('/api/non-dicom/config', { method: 'POST', body: JSON.stringify({ values, ...(token ? { voxel_pacs_token: token } : {}) }) }).then(() => { event.target.elements.voxel_pacs_token.value = ''; alert('Configuração Non-DICOM salva.'); loadNonDicom(); }).catch(error => alert(error.message)); });
     $$('.refresh-table').forEach(button => button.addEventListener('click', () => ({studies:loadStudies,queue:loadQueue,logs:loadLogs,audit:loadLogs}[button.dataset.resource])()));
     $('#start-scp').addEventListener('click', () => api('/api/dicom/start', { method: 'POST' }).then(loadDicom).catch(error => alert(error.message)));
     $('#stop-scp').addEventListener('click', () => api('/api/dicom/stop', { method: 'POST' }).then(loadDicom).catch(error => alert(error.message)));

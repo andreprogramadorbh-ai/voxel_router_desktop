@@ -16,11 +16,12 @@ from app.orthanc.client import OrthancClient
 
 
 class HealthMonitor:
-    def __init__(self, settings: Settings, orthanc: OrthancClient, scp: DicomScp, cloud: CloudConnector | None = None) -> None:
+    def __init__(self, settings: Settings, orthanc: OrthancClient, scp: DicomScp, cloud: CloudConnector | None = None, non_dicom: Any | None = None) -> None:
         self.settings = settings
         self.orthanc = orthanc
         self.scp = scp
         self.cloud = cloud or UnavailableCloudConnector()
+        self.non_dicom = non_dicom
 
     async def snapshot(self) -> dict[str, Any]:
         orthanc = await self.orthanc.health()
@@ -38,6 +39,7 @@ class HealthMonitor:
             "cloud": {"status": cloud_status},
             "dicom": {"status": "ONLINE" if self.scp.running else "OFFLINE", "ae_title": self.scp.ae_title, "port": self.scp.port},
             "storage": storage,
+            "non_dicom": self.non_dicom.status() if self.non_dicom is not None else {"service": "OFFLINE", "directory": "ERROR", "processor": "STOPPED", "voxel_pacs": "DISCONNECTED", "stats": {}},
             "network": await self.network(),
         }
 

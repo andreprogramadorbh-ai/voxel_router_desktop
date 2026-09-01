@@ -8,7 +8,7 @@ from typing import Any, Iterator
 
 from app.config.settings import AppPaths
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -211,7 +211,46 @@ CREATE TABLE IF NOT EXISTS system_events (
 );
 CREATE INDEX IF NOT EXISTS idx_system_events_created ON system_events(created_at DESC);
 
+CREATE TABLE IF NOT EXISTS non_dicom_submissions (
+    id TEXT PRIMARY KEY,
+    source_format TEXT NOT NULL CHECK(source_format IN ('PHILIPS_SUBMISSION','PHILIPS_WTT_ITEM')),
+    source_xml_path TEXT NOT NULL,
+    xml_sha256 TEXT NOT NULL UNIQUE,
+    patient_id TEXT NOT NULL,
+    patient_name TEXT,
+    accession_number TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    modality TEXT,
+    document_name TEXT,
+    document_type TEXT,
+    is_report INTEGER NOT NULL DEFAULT 0 CHECK(is_report IN (0,1)),
+    metadata_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('RECEIVED','VALIDATING','PENDING','PROCESSING','COMPLETED','FAILED','RETRYING')),
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    last_attempt_at TEXT,
+    next_attempt_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_error TEXT,
+    completed_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_non_dicom_claim ON non_dicom_submissions(status, next_attempt_at, created_at);
+CREATE INDEX IF NOT EXISTS idx_non_dicom_accession ON non_dicom_submissions(accession_number);
+
+CREATE TABLE IF NOT EXISTS non_dicom_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    submission_id TEXT REFERENCES non_dicom_submissions(id) ON DELETE CASCADE,
+    event TEXT NOT NULL,
+    status TEXT NOT NULL,
+    message TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_non_dicom_events_submission ON non_dicom_events(submission_id, id DESC);
+
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (1);
+INSERT OR IGNORE INTO schema_migrations(version) VALUES (2);
 """
 
 

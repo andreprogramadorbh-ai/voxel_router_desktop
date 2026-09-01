@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
+import os
+import platform
 from contextlib import asynccontextmanager
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
 from app.auth.service import AccountLockedError, AuthenticationError, AuthenticationService
 from app.core.engine import RouterEngine
 from app.core.logging import get_logger
+from app.security.secrets import SecretStoreError, WindowsSecretStore
 
 LOGGER = get_logger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -77,6 +80,11 @@ class QueuePriorityPayload(BaseModel):
 
 class SettingsPatch(BaseModel):
     values: dict[str, Any]
+
+
+class NonDicomConfigPayload(BaseModel):
+    values: dict[str, Any]
+    voxel_pacs_token: str | None = Field(default=None, min_length=1, max_length=4096)
 
 
 def create_app(engine: RouterEngine | None = None, start_engine: bool = False) -> FastAPI:
@@ -232,6 +240,97 @@ def create_app(engine: RouterEngine | None = None, start_engine: bool = False) -
             return result
         except (KeyError, ValueError) as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Configuração inválida") from exc
+
+    @app.get("/api/non-dicom/status")
+    async def non_dicom_status(_: dict[str, Any] = Depends(configured_user)) -> dict[str, Any]:
+        return current_engine.non_dicom.status()
+
+    @app.get("/api/non-dicom/queue")
+    async def non_dicom_queue(_: dict[str, Any] = Depends(configured_user)) -> list[dict[str, Any]]:
+        return current_engine.non_dicom.manager.list()
+
+    @app.get("/api/non-dicom/history")
+    async def non_dicom_history(_: dict[str, Any] = Depends(configured_user)) -> list[dict[str, Any]]:
+        return current_engine.non_dicom.manager.list(history=True)
+
+    @app.get("/api/non-dicom/config")
+    async def non_dicom_config(_: dict[str, Any] = Depends(configured_user)) -> dict[str, Any]:
+        return current_engine.non_dicom.configured
+
+    @app.post("/api/non-dicom/config")
+    async def update_non_dicom_config(payload: NonDicomConfigPayload, request: Request, user: dict[str, Any] = Depends(configured_user)) -> dict[str, Any]:
+        allowed = {"enabled", "root_path", "input_mode", "allowed_local_roots", "polling_interval_seconds", "max_attempts", "retry_delays_seconds", "delete_file_after_success", "max_file_size_mb", "max_xml_size_kb", "allowed_mime_types", "voxel_pacs_url", "status_path", "pending_path", "document_path", "metadata_path", "upload_path", "acknowledge_path", "status_update_path", "site_id", "router_id", "timeout_seconds", "tls_enabled"}
+        if not set(payload.values).issubset(allowed):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Alteração de configuração Non-DICOM não permitida")
+        root = payload.values.get("root_path")
+        if root and not (Path(str(root)).is_absolute() or PureWindowsPath(str(root)).is_absolute()):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Diretório raiz deve ser absoluto")
+        if payload.values.get("input_mode") and payload.values["input_mode"] not in {"LOCAL_PATH", "VOXEL_MANAGED_FILE"}:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Modo de arquivo Non-DICOM inválido")
+        try:
+            if payload.voxel_pacs_token:
+                WindowsSecretStore(settings.paths).put("non_dicom.voxel_pacs_token", payload.voxel_pacs_token)
+            result = settings.update("non_dicom", payload.values)
+            current_engine.non_dicom.reconfigure()
+            auth.audit(int(user["id"]), "UPDATE_NON_DICOM_SETTINGS", "NON_DICOM", "config", client_ip(request), "SUCCESS")
+            return result
+        except (KeyError, ValueError, SecretStoreError) as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Configuração Non-DICOM inválida") from exc
+
+    @app.post("/api/non-dicom/test")
+    async def test_non_dicom(request: Request, user: dict[str, Any] = Depends(configured_user)) -> dict[str, Any]:
+        worker = current_engine.non_dicom
+        directory_ok = all(path.is_dir() for path in (worker.paths.input, worker.paths.processing, worker.paths.completed, worker.paths.failed, worker.paths.retry, worker.paths.files))
+        connection = await worker.test_connection()
+        auth.audit(int(user["id"]), "TEST_NON_DICOM", "NON_DICOM", "config", client_ip(request), "SUCCESS" if directory_ok else "FAILURE")
+        return {"directory": "OK" if directory_ok else "ERROR", "connection": connection, "root_path": str(worker.paths.root)}
+
+    def get_non_dicom_submission(submission_id: str) -> dict[str, Any]:
+        row = database.query_one("SELECT * FROM non_dicom_submissions WHERE id = ?", (submission_id,))
+        if row is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Tarefa Non-DICOM não encontrada")
+        return dict(row)
+
+    @app.get("/api/non-dicom/{submission_id}/xml", response_class=PlainTextResponse)
+    async def non_dicom_xml(submission_id: str, _: dict[str, Any] = Depends(configured_user)) -> str:
+        item = get_non_dicom_submission(submission_id)
+        path = Path(str(item["source_xml_path"]))
+        if not path.is_file():
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "XML local não encontrado")
+        return path.read_text(encoding="utf-8", errors="replace")
+
+    @app.post("/api/non-dicom/{submission_id}/open-folder", status_code=status.HTTP_204_NO_CONTENT)
+    async def open_non_dicom_folder(submission_id: str, request: Request, user: dict[str, Any] = Depends(configured_user)) -> None:
+        item = get_non_dicom_submission(submission_id)
+        directory = Path(str(item["file_path"])).parent
+        if not directory.is_dir():
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Pasta local não encontrada")
+        if platform.system() != "Windows":
+            raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, "Abrir pasta requer a instalação Windows")
+        os.startfile(directory)  # type: ignore[attr-defined]  # noqa: S606
+        auth.audit(int(user["id"]), "OPEN_NON_DICOM_FOLDER", "NON_DICOM", submission_id, client_ip(request), "SUCCESS")
+
+    @app.post("/api/non-dicom/retry/{submission_id}", status_code=status.HTTP_204_NO_CONTENT)
+    async def retry_non_dicom(submission_id: str, request: Request, user: dict[str, Any] = Depends(configured_user)) -> None:
+        try:
+            current_engine.non_dicom.manager.retry_now(submission_id)
+        except KeyError as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+        auth.audit(int(user["id"]), "RETRY_NON_DICOM", "NON_DICOM", submission_id, client_ip(request), "SUCCESS")
+
+    @app.post("/api/non-dicom/retry-all")
+    async def retry_all_non_dicom(request: Request, user: dict[str, Any] = Depends(configured_user)) -> dict[str, int]:
+        count = current_engine.non_dicom.manager.retry_all_failed()
+        auth.audit(int(user["id"]), "RETRY_ALL_NON_DICOM", "NON_DICOM", None, client_ip(request), "SUCCESS")
+        return {"requeued": count}
+
+    @app.post("/api/non-dicom/process")
+    async def process_non_dicom(request: Request, user: dict[str, Any] = Depends(configured_user)) -> dict[str, Any]:
+        worker = current_engine.non_dicom
+        discovered = worker.scan_input()
+        processed = await worker.process_once()
+        auth.audit(int(user["id"]), "PROCESS_NON_DICOM", "NON_DICOM", None, client_ip(request), "SUCCESS")
+        return {"discovered": discovered, "processed": processed}
 
     @app.get("/api/dicom")
     async def dicom_status(_: dict[str, Any] = Depends(configured_user)) -> dict[str, Any]:

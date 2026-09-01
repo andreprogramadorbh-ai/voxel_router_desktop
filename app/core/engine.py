@@ -13,6 +13,7 @@ from app.core.logging import get_logger
 from app.dicom.ingest import DicomIngestor
 from app.dicom.scp import DicomScp
 from app.monitoring.health import HealthMonitor
+from app.non_dicom.worker import NonDicomWorker
 from app.orthanc.client import OrthancClient
 from app.queue.manager import QueueManager
 from app.security.secrets import SecretStoreError, WindowsSecretStore
@@ -47,7 +48,8 @@ class RouterEngine:
         )
         self.queue = QueueManager(self.database, list(self.settings.get("queue", "retry_delays_seconds", default=[30, 120, 300, 900])), int(self.settings.get("queue", "max_attempts", default=4)))
         self.transfer = TransferManager(self.database, self.settings, self.queue)
-        self.health = HealthMonitor(self.settings, self.orthanc, self.scp)
+        self.non_dicom = NonDicomWorker(self.settings, self.database)
+        self.health = HealthMonitor(self.settings, self.orthanc, self.scp, non_dicom=self.non_dicom)
         self._stop = asyncio.Event()
         self._tasks: list[asyncio.Task[Any]] = []
 
@@ -55,17 +57,18 @@ class RouterEngine:
         """Inicialização idempotente em ordem segura, apta a recuperação após reboot."""
         self.database.initialize()
         recovered = self.queue.recover_after_restart()
+        non_dicom_recovered = self.non_dicom.manager.recover_after_restart()
         ready = self.queue.mark_complete_studies_ready(int(self.settings.get("dicom", "study_quiet_window_seconds", default=30)))
         enqueued = self.queue.enqueue_ready_studies()
         if start_scp:
             self.scp.start()
-        LOGGER.info("router_engine_initialized", router_id=self.settings.get("system", "router_id"), recovered_items=recovered, ready_studies=ready, enqueued_items=enqueued)
-        return {"recovered": recovered, "ready": ready, "enqueued": enqueued}
+        LOGGER.info("router_engine_initialized", router_id=self.settings.get("system", "router_id"), recovered_items=recovered, non_dicom_recovered=non_dicom_recovered, ready_studies=ready, enqueued_items=enqueued)
+        return {"recovered": recovered, "non_dicom_recovered": non_dicom_recovered, "ready": ready, "enqueued": enqueued}
 
     async def run(self) -> None:
         self.initialize()
         self._stop.clear()
-        self._tasks = [asyncio.create_task(self.transfer.run()), asyncio.create_task(self._reconcile_loop()), asyncio.create_task(self._retention_loop())]
+        self._tasks = [asyncio.create_task(self.transfer.run()), asyncio.create_task(self.non_dicom.run()), asyncio.create_task(self._reconcile_loop()), asyncio.create_task(self._retention_loop())]
         try:
             await self._stop.wait()
         finally:
@@ -76,6 +79,7 @@ class RouterEngine:
             return
         self._stop.set()
         await self.transfer.stop()
+        await self.non_dicom.stop()
         for task in self._tasks:
             task.cancel()
         for task in self._tasks:

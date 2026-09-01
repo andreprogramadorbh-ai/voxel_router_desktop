@@ -48,5 +48,30 @@
     "enabled": false,
     "protocol": "dicom",
     "tls_enabled": false
+  },
+  "non_dicom": {
+    "enabled": true,
+    "root_path": "",
+    "input_mode": "VOXEL_MANAGED_FILE",
+    "allowed_local_roots": [],
+    "polling_interval_seconds": 5,
+    "max_attempts": 4,
+    "retry_delays_seconds": [30, 120, 300, 900],
+    "delete_file_after_success": false,
+    "max_file_size_mb": 50,
+    "max_xml_size_kb": 256,
+    "allowed_mime_types": ["application/pdf", "text/plain"],
+    "voxel_pacs_url": "",
+    "status_path": "/status",
+    "pending_path": "/non-dicom/pending",
+    "document_path": "/non-dicom/documents/{id}",
+    "metadata_path": "/non-dicom/documents/{id}/metadata",
+    "upload_path": "/non-dicom/submissions",
+    "acknowledge_path": "/non-dicom/acknowledge",
+    "status_update_path": "/non-dicom/status",
+    "site_id": "",
+    "router_id": "",
+    "timeout_seconds": 15,
+    "tls_enabled": true
   }
 }

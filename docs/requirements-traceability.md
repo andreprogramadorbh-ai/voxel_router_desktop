@@ -22,6 +22,7 @@ Esta matriz registra o tratamento dos requisitos recebidos e evita caracterizar 
 | Privacidade | Redaction de senha/token/PHI nos logs; guia de coleta sanitizada | `app/core/logging.py`, `docs/troubleshooting.md` | Implementado |
 | Windows Service e firewall | Serviços independentes `VOXELRouter` e `VOXELOrthanc`, recovery SCM e regras DICOM privadas `4242/4243` | `app/service_main.py`, `app/orthanc/service_main.py`, `installer/VOXEL_ROUTER_SETUP.iss` | Implementado; validar em Windows |
 | Instalador único e silencioso | Instala Router + Orthanc, detecta instalação, preserva ProgramData, registra serviços, executa diagnóstico e aceita `/S` | `installer/`, `scripts/build_windows.ps1`, `scripts/diagnose_install.py` | Implementado; compilar/homologar em Windows |
+| Integração Philips Non-DICOM | Parsers `submission/document` e `WTT_ITEM`, diretórios persistentes, fila irmã, polling, retry, logs e cliente cloud parametrizado | `app/non_dicom/`, `tests/test_non_dicom.py`, `docs/non-dicom-integration.md` | Implementado; contrato remoto real do VOXEL PACS permanece configurável |
 | Backup/configuração e update manager | Diretórios de backup, proteção de segredos e fluxo de atualização preservando ProgramData | `app/config/settings.py`, `docs/installation.md` | Parcial: exportação/restauração assinada e feed de update requerem definição de produto |
 | Regras de roteamento avançadas/multi-destino | Modelo de destinos e `CloudConnector` permitem evolução; regras declarativas ainda não possuem UI/engine | `destinations`, `CloudConnector` | Preparado para expansão |
 | Registro VOXEL Cloud, tokens e renovação | Interface desacoplada; contrato de API cloud ainda não definido | `app/cloud/connectors.py` | Preparado para integração |
@@ -35,10 +36,11 @@ Esta matriz registra o tratamento dos requisitos recebidos e evita caracterizar 
 | Completude, fila, retry e reinício | `tests/test_queue.py` |
 | C-ECHO e C-STORE reais contra SCP em rede local | `tests/test_dicom_network.py` |
 | Provisionamento/login/troca de senha/API local | `tests/test_api.py` |
+| XML Philips, WTT_ITEM, path traversal, MIME, duplicidade, polling, fila, sucesso, falha, retry e cloud indisponível | `tests/test_non_dicom.py` |
 
 ## Dependências de homologação
 
-O instalador não deve incluir Orthanc sem validação de versão, licença, plugins e assinatura. A integração VOXEL Cloud não pode ser considerada conectada até receber contrato de endpoints, credenciais, política de confirmação e certificados. A função de exportar/restaurar configurações e o Update Manager devem ser finalizados após haver assinatura/criptografia, formato de backup e origem de atualizações aprovados. Esses pontos estão explicitamente fora da afirmação de aceite até que suas dependências estejam disponíveis.
+O instalador não deve incluir Orthanc sem validação de versão, licença, plugins e assinatura. A integração VOXEL Cloud e a entrega Non-DICOM não podem ser consideradas conectadas até receber contrato de endpoints, credenciais, política de confirmação e certificados. A função de exportar/restaurar configurações e o Update Manager devem ser finalizados após haver assinatura/criptografia, formato de backup e origem de atualizações aprovados. Esses pontos estão explicitamente fora da afirmação de aceite até que suas dependências estejam disponíveis.
 
 ## Referências
 
