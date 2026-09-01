@@ -14,9 +14,9 @@ O repositório começou vazio. Esta entrega estabelece o MVP de código-fonte, c
 | DICOM | SCP com **C-ECHO** e **C-STORE**, validação de UIDs, checksum SHA-256, deduplicação por SOP Instance UID, modalidades derivadas das séries e SCU C-STORE para destino |
 | Persistência | SQLite em WAL/FULL, transações `IMMEDIATE`, estado de estudo/instância/série, fila, tentativas, transferências, erros, auditoria e eventos |
 | Resiliência | Fila persistente, recuperação de itens `SENDING` após reinício, janela de completude de estudo, retry limitado configurável, retenção apenas de estudos validados |
-| Orthanc | Cliente REST de saúde, ingestão e consulta; gerador de `orthanc.json`; configuração do serviço Windows no instalador |
+| Orthanc | Processo `Orthanc.exe` separado, REST de saúde real, DICOM `4243`, configuração persistente e host de serviço próprio instalado automaticamente |
 | Interface | Login, provisionamento inicial, dashboard de saúde/fila/storage, estudos, fila, SCP DICOM, modalidades, destinos, logs, auditoria e configurações |
-| Windows | Build PyInstaller, host de serviço `VOXEL Router Engine`, Inno Setup, diretórios corretos e regra de firewall limitada à porta DICOM |
+| Windows | Instalador único para Router + Orthanc, serviços `VOXELRouter`/`VOXELOrthanc`, diagnóstico final, diretórios persistentes e firewall DICOM privado |
 
 ## Estrutura
 
@@ -88,13 +88,9 @@ Abra [http://127.0.0.1:8765](http://127.0.0.1:8765). Sem administrador provision
 
 ## Orthanc
 
-Coloque somente o pacote **Orthanc homologado pela VOXEL** em `vendor/orthanc/` no ambiente de build. Gere a configuração antes de instalar o serviço:
+O pacote **Orthanc homologado pela VOXEL** deve estar em `vendor/orthanc/` somente na estação de build. Ele é incluído automaticamente no `VOXEL_ROUTER_SETUP.exe`; o cliente não instala nem configura o Orthanc manualmente. Durante a primeira instalação, o instalador gera `orthanc.json` em `C:\ProgramData\VOXEL\Router\config`, cria o storage e o índice persistentes, registra o serviço **VOXEL Orthanc** e valida a REST em `127.0.0.1:8042` antes de iniciar o Router.
 
-```powershell
-python scripts/configure_orthanc.py
-```
-
-O arquivo gerado restringe o acesso HTTP ao host local, habilita autenticação do usuário interno do Router, aplica `DicomCheckCalledAet` e não contém senha pré-fixada. O binário exato, plugins, licenças, certificados DICOM TLS e política de versões devem ser homologados no ambiente clínico antes de produção.
+O arquivo gerado restringe a REST ao host local, habilita autenticação do usuário interno do Router, aplica `DicomCheckCalledAet`, usa DICOM `4243` e não contém senha pré-fixada. O binário exato, plugins, licenças, certificados DICOM TLS e política de versões continuam sujeitos à homologação clínica.
 
 ## Build e instalação Windows
 
@@ -104,13 +100,13 @@ Em uma máquina de build Windows x64 com Python 3.12, Inno Setup 6, Orthanc homo
 powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1
 ```
 
-O resultado esperado é `dist\VOXEL_ROUTER_SETUP.exe`. A instalação provisiona binários em `C:\Program Files\VOXEL\Router` e dados em `C:\ProgramData\VOXEL\Router`. Para implantação sem interface:
+O resultado esperado é `dist\VOXEL_ROUTER_SETUP.exe`. A instalação provisiona separadamente `VOXELRouter.exe`, `VOXELRouterService.exe`, `VOXELOrthancService.exe` e `orthanc\Orthanc.exe` em `C:\Program Files\VOXEL\Router`; dados de Router, fila, logs, configuração, storage e índice Orthanc ficam em `C:\ProgramData\VOXEL\Router`. O diagnóstico final só conclui após validar serviços, portas `4242`, `4243`, `8042` e `8765`, além dos endpoints reais de Router e Orthanc. Para implantação sem interface:
 
 ```text
 VOXEL_ROUTER_SETUP.exe /S
 ```
 
-A desinstalação deve preservar os dados por padrão e requer escolha explícita para apagar estudos e estado local.
+A atualização e a desinstalação normal preservam `config`, `queue`, `logs`, `orthanc\storage` e `orthanc\database`; exames DICOM não são apagados automaticamente.
 
 ## Testes e cenários validados
 
@@ -128,12 +124,13 @@ Antes da liberação clínica, execute o protocolo completo em uma estação Win
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Camadas, fluxo de dados, persistência, segurança, rollback e implantação |
 | [docs/installation.md](docs/installation.md) | Processo de instalação Windows, configuração, serviços e firewall |
+| [docs/installer-architecture.md](docs/installer-architecture.md) | Fluxo idempotente do instalador único, serviços separados, diagnóstico e rollback |
 | [docs/dicom-validation.md](docs/dicom-validation.md) | Protocolo de C-ECHO/C-STORE e cenários de continuidade operacional |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Diagnóstico seguro de Orthanc, DICOM, fila, cloud e storage |
 
 ## Referências
 
-[1]: https://www.orthanc-server.com/static.php?page=users-manual "Orthanc Book — User Manual"
+[1]: https://orthanc.uclouvain.be/book/users/configuration.html "Orthanc Book — Configuration"
 [2]: https://pydicom.github.io/pynetdicom/stable/ "pynetdicom documentation"
 [3]: https://fastapi.tiangolo.com/ "FastAPI documentation"
 [4]: https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html "OWASP Authentication Cheat Sheet"
