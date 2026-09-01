@@ -77,6 +77,10 @@ def test_installer_contract_packages_and_starts_independent_components() -> None
     assert "Iniciar VOXEL Router" in installer
     assert "Diagnóstico final Router e Orthanc" in installer
     assert "Nenhum diretório em ProgramData é removido" in installer
+    assert "function OrthancInstallationIsValid" in installer
+    assert "OrthancInstallationWasValid" in installer
+    assert "Check: not OrthancInstallationWasValid" in installer
+    assert "Orthanc válido detectado" in installer
     assert "--install --name" not in installer
     assert '--name VOXELOrthancService' in build
     assert '--name VOXELDiagnostics' in build

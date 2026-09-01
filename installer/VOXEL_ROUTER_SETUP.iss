@@ -40,7 +40,7 @@ Source: "..\dist\VOXELRouter\*"; DestDir: "{app}"; Flags: recursesubdirs ignorev
 Source: "..\dist\VOXELRouterService\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 Source: "..\dist\VOXELOrthancService\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 Source: "..\dist\VOXELDiagnostics\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
-Source: "..\vendor\orthanc\*"; DestDir: "{app}\orthanc"; Flags: recursesubdirs ignoreversion
+Source: "..\vendor\orthanc\*"; DestDir: "{app}\orthanc"; Flags: recursesubdirs ignoreversion; Check: not OrthancInstallationWasValid
 Source: "..\config\default.json"; DestDir: "{commonappdata}\VOXEL\Router\config"; DestName: "router.json"; Flags: onlyifdoesntexist
 Source: "..\frontend\static\img\router.ico"; DestDir: "{app}\assets"; Flags: ignoreversion
 
@@ -79,6 +79,7 @@ Filename: "netsh.exe"; Parameters: "advfirewall firewall delete rule name=\"VOXE
 [Code]
 var
   InstallVerified: Boolean;
+  OrthancInstallationWasValid: Boolean;
 
 function CmdLineHasSilentFlag(): Boolean;
 begin
@@ -116,13 +117,28 @@ begin
   Result := Exec(ExpandConstant('{cmd}'), '/c sc.exe query ' + ServiceName + ' >nul 2>&1', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
 end;
 
-function StartService(const ServiceName: String): Boolean;
+function ServiceRunning(const ServiceName: String): Boolean;
+var
+  ResultCode: Integer;
 begin
-  Result := ExecuteAndCheck('sc.exe', 'start ' + ServiceName, 'Iniciar serviço ' + ServiceName);
-  if not Result then begin
-    { O serviço pode já estar em execução; o diagnóstico final confirma o estado real. }
-    Result := ServiceExists(ServiceName);
-  end;
+  Result := Exec(ExpandConstant('{cmd}'), '/c sc.exe query ' + ServiceName +
+    ' | find "RUNNING" >nul 2>&1', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
+function OrthancInstallationIsValid(): Boolean;
+begin
+  Result :=
+    FileExists(ExpandConstant('{app}\orthanc\Orthanc.exe')) and
+    FileExists(ExpandConstant('{commonappdata}\VOXEL\Router\config\orthanc.json')) and
+    ServiceExists('{#OrthancServiceName}');
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  OrthancInstallationWasValid := OrthancInstallationIsValid();
+  if OrthancInstallationWasValid then
+    Log('Orthanc válido detectado: binário, configuração e serviço em execução serão preservados.');
+  Result := '';
 end;
 
 function RunCritical(const Filename, Parameters, Component: String): Boolean;
@@ -169,6 +185,7 @@ begin
   Log('Detecção storage: ' + BoolText(DirExists(ExpandConstant('{commonappdata}\VOXEL\Router\orthanc\storage'))));
   Log('Detecção serviço Router: ' + BoolText(ServiceExists('{#RouterServiceName}')));
   Log('Detecção serviço Orthanc: ' + BoolText(ServiceExists('{#OrthancServiceName}')));
+  Log('Orthanc válido e preservado: ' + BoolText(OrthancInstallationWasValid));
 end;
 
 procedure SetInstallationIncomplete();
@@ -184,7 +201,8 @@ begin
   if CurStep = ssInstall then begin
     LogExistingInstallation();
     StopServiceIfInstalled('{#RouterServiceName}');
-    StopServiceIfInstalled('{#OrthancServiceName}');
+    if not OrthancInstallationWasValid then
+      StopServiceIfInstalled('{#OrthancServiceName}');
   end;
 
   if CurStep = ssPostInstall then begin
@@ -216,9 +234,11 @@ begin
       SetInstallationIncomplete();
       exit;
     end;
-    if not RunCritical('sc.exe', 'start {#OrthancServiceName}', 'Iniciar VOXEL Orthanc') then begin
-      SetInstallationIncomplete();
-      exit;
+    if not ServiceRunning('{#OrthancServiceName}') then begin
+      if not RunCritical('sc.exe', 'start {#OrthancServiceName}', 'Iniciar VOXEL Orthanc') then begin
+        SetInstallationIncomplete();
+        exit;
+      end;
     end;
 
     if not ServiceExists('{#RouterServiceName}') then begin
