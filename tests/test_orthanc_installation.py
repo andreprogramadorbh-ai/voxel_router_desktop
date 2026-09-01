@@ -61,6 +61,28 @@ async def test_dashboard_health_reports_external_orthanc_and_separate_ports(sett
     assert result["dicom"] == {"status": "ONLINE", "ae_title": "VOXEL_ROUTER", "port": 4242}
 
 
+@pytest.mark.asyncio
+async def test_sequential_diagnostics_isolate_orthanc_and_router_startup(settings, monkeypatch):
+    from scripts import diagnose_install
+
+    async def port_ready(host: str, port: int) -> bool:
+        return True
+
+    async def endpoint_ready(url: str, auth=None) -> tuple[bool, str]:
+        return True, "200"
+
+    monkeypatch.setattr(diagnose_install, "wait_for_tcp", port_ready)
+    monkeypatch.setattr(diagnose_install, "wait_for_http", endpoint_ready)
+
+    orthanc_names = {check.name for check in await diagnose_install.diagnose(settings, "orthanc")}
+    router_names = {check.name for check in await diagnose_install.diagnose(settings, "router")}
+
+    assert "Health check Orthanc" in orthanc_names
+    assert "Health check Router" not in orthanc_names
+    assert "Health check Router" in router_names
+    assert "Health check Orthanc" not in router_names
+
+
 def test_installer_contract_packages_and_starts_independent_components() -> None:
     installer = (PROJECT_ROOT / "installer" / "VOXEL_ROUTER_SETUP.iss").read_text(encoding="utf-8")
     build = (PROJECT_ROOT / "scripts" / "build_windows.ps1").read_text(encoding="utf-8")
@@ -75,6 +97,8 @@ def test_installer_contract_packages_and_starts_independent_components() -> None
     assert "Iniciar VOXEL Orthanc" in installer
     assert "Instalar serviço VOXEL Router" in installer
     assert "Iniciar VOXEL Router" in installer
+    assert "Verificar VOXEL Orthanc" in installer
+    assert "Verificar VOXEL Router" in installer
     assert "Diagnóstico final Router e Orthanc" in installer
     assert "Nenhum diretório em ProgramData é removido" in installer
     assert "function OrthancInstallationIsValid" in installer

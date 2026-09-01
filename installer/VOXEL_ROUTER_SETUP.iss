@@ -240,6 +240,10 @@ begin
         exit;
       end;
     end;
+    if not RunCritical(ExpandConstant('{app}\{#DiagnosticsExeName}'), '--component orthanc', 'Verificar VOXEL Orthanc') then begin
+      SetInstallationIncomplete();
+      exit;
+    end;
 
     if not ServiceExists('{#RouterServiceName}') then begin
       if not RunCritical(ExpandConstant('{app}\{#RouterServiceExeName}'), '--startup auto install', 'Instalar serviço VOXEL Router') then begin
@@ -252,6 +256,10 @@ begin
       exit;
     end;
     if not RunCritical('sc.exe', 'start {#RouterServiceName}', 'Iniciar VOXEL Router') then begin
+      SetInstallationIncomplete();
+      exit;
+    end;
+    if not RunCritical(ExpandConstant('{app}\{#DiagnosticsExeName}'), '--component router', 'Verificar VOXEL Router') then begin
       SetInstallationIncomplete();
       exit;
     end;
