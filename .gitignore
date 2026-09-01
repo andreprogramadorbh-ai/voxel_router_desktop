@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+.venv/
+
+# Build artifacts
+build/
+dist/
+*.spec
+
+# Runtime data and secrets
+.local-data/
+router-data/
+*.db
+*.db-shm
+*.db-wal
+secrets.dat
+orthanc.json
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Orthanc vendor binaries (provisioned only in signed build pipeline)
+vendor/orthanc/

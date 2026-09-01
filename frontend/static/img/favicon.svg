@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="VOXEL Router">
+  <defs>
+    <linearGradient id="v" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#4fc3f7"/><stop offset=".52" stop-color="#075a9e"/><stop offset="1" stop-color="#0d1b2a"/></linearGradient>
+  </defs>
+  <path fill="#0d1b2a" d="M64 3 118 34v60l-54 31L10 94V34z"/>
+  <path fill="url(#v)" d="m23 35 17-10 24 44 24-44 17 10-41 75z"/>
+  <path fill="#d9f7ff" opacity=".85" d="m40 25 24 44v41L23 35z"/>
+</svg>

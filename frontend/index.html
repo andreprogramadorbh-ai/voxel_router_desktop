@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0d1b2a">
+  <title>VOXEL ROUTER — DICOM Edge Router</title>
+  <link rel="icon" href="/assets/img/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/css/router.css">
+</head>
+<body>
+  <main id="login-view" class="login-layout">
+    <section class="login-brand" aria-label="VOXEL Router">
+      <img class="brand-logo" src="/assets/img/logo-voxel-pacs.png" alt="VOXEL PACS">
+      <div class="brand-title"><span>VOXEL</span> ROUTER</div>
+      <p>DICOM Edge Router</p>
+      <p class="brand-subtitle">Secure DICOM Edge Router</p>
+      <div class="brand-trust"><span class="status-dot online"></span> Store · Queue · Transmit · Validate</div>
+    </section>
+    <section class="login-panel">
+      <div id="provision-form" hidden>
+        <p class="eyebrow">PRIMEIRA CONFIGURAÇÃO</p>
+        <h1>Provisionar administrador</h1>
+        <p>Defina a credencial inicial do administrador local. Esta senha não será exibida nem gravada em texto puro.</p>
+        <form id="form-provision">
+          <label>Usuário<input id="provision-username" value="voxeladmin" autocomplete="username" required></label>
+          <label>Senha inicial<input id="provision-password" type="password" autocomplete="new-password" minlength="12" required></label>
+          <label>Confirmar senha<input id="provision-confirm" type="password" autocomplete="new-password" minlength="12" required></label>
+          <button type="submit" class="primary">PROVISIONAR</button>
+        </form>
+      </div>
+      <div id="auth-form">
+        <p class="eyebrow">ACESSO ADMINISTRATIVO LOCAL</p>
+        <h1>Entrar no Router</h1>
+        <p>Use a conta administrativa configurada para este equipamento.</p>
+        <form id="form-login">
+          <label>Usuário<input id="username" autocomplete="username" required></label>
+          <label>Senha<div class="password-field"><input id="password" type="password" autocomplete="current-password" required><button id="toggle-password" type="button" class="text-button">Mostrar</button></div></label>
+          <button type="submit" class="primary">ENTRAR</button>
+        </form>
+      </div>
+      <p id="login-message" class="form-message" role="alert"></p>
+      <footer>VOXEL ROUTER v1.0.0 · Interface local protegida</footer>
+    </section>
+  </main>
+
+  <main id="app-view" class="application" hidden>
+    <aside class="sidebar">
+      <div class="sidebar-brand"><span class="cube">V</span><div><strong>VOXEL ROUTER</strong><small>DICOM Edge Router</small></div></div>
+      <nav aria-label="Navegação principal">
+        <button class="nav-item active" data-page="dashboard">Dashboard</button>
+        <button class="nav-item" data-page="monitoring">Monitoramento</button>
+        <button class="nav-item" data-page="queue">Fila de transmissão</button>
+        <button class="nav-item" data-page="dicom">DICOM local</button>
+        <button class="nav-item" data-page="modalities">Modalidades</button>
+        <button class="nav-item" data-page="destinations">VOXEL Cloud e destinos</button>
+        <button class="nav-item" data-page="logs">Logs e auditoria</button>
+        <button class="nav-item" data-page="settings">Configurações</button>
+      </nav>
+      <div class="sidebar-foot"><span id="router-id">Router ID: —</span><button id="logout" class="text-button">Sair</button></div>
+    </aside>
+    <section class="workspace">
+      <header class="topbar"><div><p class="eyebrow" id="page-kicker">OPERAÇÃO LOCAL</p><h1 id="page-title">Dashboard</h1></div><div class="topbar-status"><span class="status-dot online"></span><span id="router-status">ROUTER ONLINE</span><span class="divider"></span><span id="clock"></span></div></header>
+
+      <section id="dashboard-page" class="page active-page">
+        <div class="health-grid" id="health-cards"></div>
+        <div class="metric-grid" id="metric-cards"></div>
+        <div class="two-column">
+          <article class="panel"><div class="panel-heading"><div><p class="eyebrow">SAÚDE DA INFRAESTRUTURA</p><h2>Conectividade</h2></div><button class="secondary" id="refresh-dashboard">Atualizar</button></div><div id="network-health" class="health-list"></div></article>
+          <article class="panel"><div class="panel-heading"><div><p class="eyebrow">ARMAZENAMENTO TEMPORÁRIO</p><h2>Uso local</h2></div><span id="storage-status" class="badge neutral">—</span></div><div class="storage-visual"><div class="progress-track"><span id="storage-progress" class="progress-fill"></span></div><strong id="storage-value">—</strong><p id="storage-detail">Carregando status do disco.</p></div></article>
+        </div>
+      </section>
+
+      <section id="monitoring-page" class="page"><div class="panel"><div class="panel-heading"><div><p class="eyebrow">ESTUDOS RECEBIDOS</p><h2>Monitoramento em tempo real</h2></div><button class="secondary refresh-table" data-resource="studies">Atualizar</button></div><div class="table-wrap"><table><thead><tr><th>Data/Hora</th><th>Paciente / ID</th><th>Modalidade</th><th>Study UID</th><th>Tamanho</th><th>Status</th><th>Progresso</th></tr></thead><tbody id="studies-table"></tbody></table></div></div></section>
+
+      <section id="queue-page" class="page"><div class="panel"><div class="panel-heading"><div><p class="eyebrow">STORE AND FORWARD</p><h2>Fila persistente</h2></div><button class="secondary refresh-table" data-resource="queue">Atualizar</button></div><div class="table-wrap"><table><thead><tr><th>Prioridade</th><th>Estudo</th><th>Destino</th><th>Status</th><th>Tentativas</th><th>Próxima tentativa</th><th>Ações</th></tr></thead><tbody id="queue-table"></tbody></table></div></div></section>
+
+      <section id="dicom-page" class="page"><div class="two-column"><article class="panel"><p class="eyebrow">C-STORE SCP</p><h2>Configuração DICOM local</h2><dl class="detail-list"><div><dt>IP local</dt><dd>0.0.0.0 (escuta DICOM)</dd></div><div><dt>AE Title</dt><dd id="dicom-ae">—</dd></div><div><dt>Porta</dt><dd id="dicom-port">—</dd></div><div><dt>Status SCP</dt><dd id="dicom-state">—</dd></div></dl><div class="button-row"><button class="primary" id="start-scp">INICIAR</button><button class="secondary" id="stop-scp">PARAR</button></div></article><article class="panel"><p class="eyebrow">CONFIGURAÇÃO DE MODALIDADE</p><h2>Dados para copiar</h2><pre id="dicom-copy">AE Title: —\nIP: —\nPorta: —</pre><button class="secondary" id="copy-dicom">COPIAR CONFIGURAÇÃO</button><p class="helper">Configure a modalidade para enviar ao AE Title e porta exibidos. Abra apenas a porta DICOM necessária no firewall.</p></article></div></section>
+
+      <section id="modalities-page" class="page"><div class="panel"><div class="panel-heading"><div><p class="eyebrow">NÓS REMOTOS</p><h2>Modalidades cadastradas</h2></div><button class="primary" id="add-modality">ADICIONAR</button></div><div class="table-wrap"><table><thead><tr><th>Nome</th><th>AE Title</th><th>IP / Porta</th><th>Modalidade</th><th>Localização</th><th>Status</th></tr></thead><tbody id="modalities-table"></tbody></table></div></div></section>
+
+      <section id="destinations-page" class="page"><div class="panel"><div class="panel-heading"><div><p class="eyebrow">TRANSMISSÃO SEGURA</p><h2>VOXEL Cloud e destinos</h2></div><button class="primary" id="add-destination">ADICIONAR DESTINO</button></div><div class="table-wrap"><table><thead><tr><th>Nome</th><th>Tipo</th><th>Endpoint / DICOM</th><th>TLS</th><th>Prioridade</th><th>Status</th></tr></thead><tbody id="destinations-table"></tbody></table></div></div></section>
+
+      <section id="logs-page" class="page"><div class="two-column"><article class="panel"><div class="panel-heading"><div><p class="eyebrow">EVENTOS OPERACIONAIS</p><h2>Logs</h2></div><button class="secondary refresh-table" data-resource="logs">Atualizar</button></div><div class="table-wrap"><table><thead><tr><th>Data/Hora</th><th>Categoria</th><th>Severidade</th><th>Código</th><th>Mensagem</th></tr></thead><tbody id="logs-table"></tbody></table></div></article><article class="panel"><div class="panel-heading"><div><p class="eyebrow">RASTREABILIDADE</p><h2>Auditoria</h2></div><button class="secondary refresh-table" data-resource="audit">Atualizar</button></div><div class="table-wrap"><table><thead><tr><th>Data/Hora</th><th>Ação</th><th>Entidade</th><th>Resultado</th></tr></thead><tbody id="audit-table"></tbody></table></div></article></div></section>
+
+      <section id="settings-page" class="page"><div class="two-column"><article class="panel"><p class="eyebrow">SISTEMA</p><h2>Identificação e armazenamento</h2><form id="settings-system"><label>Nome do equipamento<input name="equipment_name" maxlength="128"></label><label>Timezone<input name="timezone" maxlength="64"></label><button class="primary" type="submit">SALVAR SISTEMA</button></form><hr><form id="settings-storage"><label>Retenção local (horas)<input name="retention_hours" type="number" min="1" max="8760"></label><label class="checkbox-label"><input name="auto_delete" type="checkbox"> Excluir somente estudos validados após a retenção</label><button class="secondary" type="submit">SALVAR RETENÇÃO</button></form></article><article class="panel"><p class="eyebrow">SEGURANÇA</p><h2>Alterar acesso administrativo</h2><form id="change-username"><label>Novo usuário<input name="username" minlength="3" maxlength="64" required></label><button class="secondary" type="submit">ALTERAR USUÁRIO</button></form><hr><form id="change-password"><label>Senha atual<input name="current_password" type="password" required></label><label>Nova senha<input name="new_password" type="password" minlength="12" required></label><button class="primary" type="submit">ALTERAR SENHA</button></form><p class="helper">Tokens e senhas não são gravados na interface ou nos logs.</p></article></div></section>
+    </section>
+  </main>
+
+  <dialog id="modal"><form method="dialog" class="modal-card" id="modal-form"><header><h2 id="modal-title">Cadastrar</h2><button value="cancel" class="text-button">Fechar</button></header><div id="modal-fields"></div><footer><button value="cancel" class="secondary">CANCELAR</button><button id="modal-save" value="default" class="primary">SALVAR</button></footer></form></dialog>
+  <dialog id="password-dialog"><form method="dialog" id="force-password-form" class="modal-card"><header><h2>Altere a senha inicial</h2></header><p>Por segurança, a credencial de bootstrap só pode ser usada para definir uma senha exclusiva deste equipamento.</p><label>Senha atual<input name="current_password" type="password" required></label><label>Nova senha<input name="new_password" type="password" minlength="12" required></label><button class="primary" value="default">ALTERAR E ENTRAR NOVAMENTE</button><p id="force-password-message" class="form-message"></p></form></dialog>
+  <script src="/assets/js/router.js"></script>
+</body>
+</html>

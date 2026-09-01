@@ -1,0 +1,48 @@
+{
+  "system": {
+    "application_name": "VOXEL ROUTER",
+    "version": "1.0.0",
+    "router_id": "",
+    "equipment_name": "",
+    "timezone": "America/Sao_Paulo",
+    "language": "pt-BR"
+  },
+  "api": {
+    "host": "127.0.0.1",
+    "port": 8765,
+    "session_minutes": 30,
+    "trusted_local_hosts": ["127.0.0.1", "::1"]
+  },
+  "dicom": {
+    "ae_title": "VOXEL_ROUTER",
+    "port": 4242,
+    "association_timeout_seconds": 15,
+    "network_timeout_seconds": 30,
+    "max_associations": 8,
+    "study_quiet_window_seconds": 30,
+    "tls_enabled": false
+  },
+  "orthanc": {
+    "url": "http://127.0.0.1:8042",
+    "service_name": "VOXEL Orthanc Service",
+    "timeout_seconds": 10,
+    "enabled": true
+  },
+  "queue": {
+    "max_concurrent_transfers": 2,
+    "retry_delays_seconds": [30, 120, 300, 900],
+    "max_attempts": 4
+  },
+  "storage": {
+    "retention_hours": 168,
+    "auto_delete": false,
+    "warning_percent": 70,
+    "critical_percent": 85,
+    "emergency_percent": 95
+  },
+  "cloud": {
+    "enabled": false,
+    "protocol": "dicom",
+    "tls_enabled": false
+  }
+}

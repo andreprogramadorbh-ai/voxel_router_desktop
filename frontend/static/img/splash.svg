@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#07111e"/><stop offset=".55" stop-color="#0d1b2a"/><stop offset="1" stop-color="#075a9e"/></linearGradient><linearGradient id="v" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#55d7f7"/><stop offset="1" stop-color="#075a9e"/></linearGradient></defs>
+  <rect width="1280" height="720" fill="url(#bg)"/><circle cx="1120" cy="610" r="330" fill="none" stroke="#4fc3f7" stroke-opacity=".2" stroke-width="1"/><circle cx="1120" cy="610" r="250" fill="none" stroke="#4fc3f7" stroke-opacity=".12" stroke-width="1"/>
+  <path fill="url(#v)" d="m455 230 42-24 62 115 62-115 42 24-104 190z"/><path fill="#d9f7ff" opacity=".8" d="m497 206 62 115v99L455 230z"/>
+  <text x="640" y="358" fill="#fff" font-family="Segoe UI, Arial, sans-serif" font-size="62" font-weight="800" letter-spacing="8">VOXEL ROUTER</text><text x="646" y="402" fill="#8fcdef" font-family="Segoe UI, Arial, sans-serif" font-size="22" letter-spacing="7">DICOM EDGE ROUTER</text>
+  <rect x="646" y="458" width="300" height="4" rx="2" fill="#4fc3f7"/><text x="646" y="502" fill="#c4dbea" font-family="Segoe UI, Arial, sans-serif" font-size="16" letter-spacing="2">STORE · QUEUE · TRANSMIT · VALIDATE</text>
+</svg>
