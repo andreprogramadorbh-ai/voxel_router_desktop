@@ -5,6 +5,15 @@
   const state = { system: null, user: null };
   const labels = { 1: 'CRITICAL', 2: 'HIGH', 3: 'NORMAL', 4: 'LOW' };
 
+  // A interface é uma SPA local. A posição anterior nunca deve reaparecer após autenticação ou troca de seção.
+  if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+
+  function scrollToTop() {
+    window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+  }
+
   async function api(path, options = {}) {
     const response = await fetch(path, { credentials: 'same-origin', headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }, ...options });
     if (response.status === 204) return null;
@@ -38,36 +47,51 @@
   }
 
   function visiblePage(name) {
+    scrollToTop();
     $$('.page').forEach(page => page.classList.toggle('active-page', page.id === `${name}-page`));
     $$('.nav-item').forEach(button => button.classList.toggle('active', button.dataset.page === name));
     const titles = { dashboard: ['OPERAÇÃO LOCAL', 'Dashboard'], monitoring: ['ESTUDOS RECEBIDOS', 'Monitoramento'], queue: ['STORE AND FORWARD', 'Fila de transmissão'], dicom: ['RECEPÇÃO DICOM', 'DICOM local'], modalities: ['NÓS REMOTOS', 'Modalidades'], destinations: ['TRANSMISSÃO SEGURA', 'VOXEL Cloud e destinos'], logs: ['OBSERVABILIDADE', 'Logs e auditoria'], settings: ['ADMINISTRAÇÃO', 'Configurações'] };
     $('#page-kicker').textContent = titles[name][0];
     $('#page-title').textContent = titles[name][1];
     ({ dashboard: loadDashboard, monitoring: loadStudies, queue: loadQueue, dicom: loadDicom, modalities: loadModalities, destinations: loadDestinations, logs: loadLogs, settings: loadSettings }[name])?.();
+    requestAnimationFrame(scrollToTop);
   }
 
   async function verifyBootstrap() {
     const bootstrap = await api('/api/auth/bootstrap-status');
     $('#provision-form').hidden = bootstrap.provisioned;
     $('#auth-form').hidden = !bootstrap.provisioned;
+    scrollToTop();
+    if (bootstrap.provisioned) $('#username').focus();
+  }
+
+  function replacePath(path) {
+    if (location.pathname !== path) history.replaceState(null, '', path);
   }
 
   async function initialize() {
     try {
       state.user = await api('/api/auth/me');
       if (state.user.must_change_password) {
+        replacePath('/');
+        scrollToTop();
         $('#password-dialog').showModal();
       } else {
         showApp();
       }
     } catch (_) {
+      // URLs administrativas não autenticadas retornam explicitamente à tela de login.
+      replacePath('/');
       await verifyBootstrap();
     }
   }
 
   function showApp() {
+    $('#login-message').textContent = '';
     $('#login-view').hidden = true;
     $('#app-view').hidden = false;
+    replacePath('/dashboard');
+    scrollToTop();
     visiblePage('dashboard');
     window.setInterval(() => { $('#clock').textContent = new Date().toLocaleString('pt-BR'); }, 1000);
   }
@@ -155,7 +179,12 @@
       event.preventDefault();
       const password = $('#provision-password').value;
       if (password !== $('#provision-confirm').value) return showMessage('As senhas informadas não coincidem.');
-      try { await api('/api/auth/provision', { method: 'POST', body: JSON.stringify({ username: $('#provision-username').value, password }) }); showMessage('Administrador provisionado. Faça o primeiro login.', false); await verifyBootstrap(); } catch (error) { showMessage(error.message); }
+      try {
+        await api('/api/auth/provision', { method: 'POST', body: JSON.stringify({ username: $('#provision-username').value, password }) });
+        showMessage('Administrador provisionado. Faça o primeiro login.', false);
+        await verifyBootstrap();
+        scrollToTop();
+      } catch (error) { showMessage(error.message); }
     });
     $('#form-login').addEventListener('submit', async (event) => {
       event.preventDefault();
@@ -179,7 +208,7 @@
     $('#settings-storage').addEventListener('submit', event => { event.preventDefault(); const form = new FormData(event.target); api('/api/settings/storage', { method: 'PATCH', body: JSON.stringify({ values: { retention_hours: Number(form.get('retention_hours')), auto_delete: form.get('auto_delete') === 'on' } }) }).then(() => alert('Política de retenção salva.')).catch(error => alert(error.message)); });
     $('#change-username').addEventListener('submit', event => { event.preventDefault(); api('/api/auth/username', { method: 'PUT', body: JSON.stringify(Object.fromEntries(new FormData(event.target))) }).then(() => alert('Usuário alterado.')).catch(error => alert(error.message)); });
     $('#change-password').addEventListener('submit', event => { event.preventDefault(); api('/api/auth/change-password', { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(event.target))) }).then(() => { alert('Senha alterada; entre novamente.'); location.reload(); }).catch(error => alert(error.message)); });
-    $('#logout').addEventListener('click', () => api('/api/auth/logout', { method: 'POST' }).finally(() => location.reload()));
+    $('#logout').addEventListener('click', () => api('/api/auth/logout', { method: 'POST' }).finally(() => { scrollToTop(); location.replace('/'); }));
   }
 
   bindEvents(); initialize();

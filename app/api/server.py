@@ -125,7 +125,10 @@ def create_app(engine: RouterEngine | None = None, start_engine: bool = False) -
         return user
 
     @app.get("/")
+    @app.get("/dashboard", include_in_schema=False)
+    @app.get("/admin", include_in_schema=False)
     async def frontend() -> FileResponse:
+        """Entrega a SPA existente; o cliente consulta a sessão antes de exibir o Dashboard."""
         return FileResponse(FRONTEND_ROOT / "index.html")
 
     @app.get("/health")
