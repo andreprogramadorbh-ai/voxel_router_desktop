@@ -48,8 +48,32 @@ class AppPaths:
             backup=root / "backup",
         )
 
+    @property
+    def orthanc_root(self) -> Path:
+        return self.root / "orthanc"
+
+    @property
+    def orthanc_storage(self) -> Path:
+        return self.orthanc_root / "storage"
+
+    @property
+    def orthanc_database(self) -> Path:
+        return self.orthanc_root / "database"
+
     def ensure(self) -> None:
-        for path in (self.root, self.config, self.database, self.logs, self.storage, self.certificates, self.cache, self.backup):
+        for path in (
+            self.root,
+            self.config,
+            self.database,
+            self.logs,
+            self.storage,
+            self.certificates,
+            self.cache,
+            self.backup,
+            self.orthanc_root,
+            self.orthanc_storage,
+            self.orthanc_database,
+        ):
             path.mkdir(parents=True, exist_ok=True)
 
 

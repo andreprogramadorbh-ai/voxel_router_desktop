@@ -62,7 +62,10 @@ class WindowsSecretStore:
         if platform.system() == "Windows":
             try:
                 import win32crypt  # type: ignore[import-not-found]
-                return win32crypt.CryptProtectData(payload, "VOXEL Router", None, None, None, 0)[1]
+                # Serviços Windows executam fora do perfil do usuário que iniciou o instalador.
+                # O escopo de máquina permite a leitura pelo serviço; a ACL do instalador protege o arquivo.
+                flags = getattr(win32crypt, "CRYPTPROTECT_LOCAL_MACHINE", 4)
+                return win32crypt.CryptProtectData(payload, "VOXEL Router", None, None, None, flags)[1]
             except ImportError as exc:
                 raise SecretStoreError("DPAPI indisponível; instale o componente de serviço Windows") from exc
         if os.getenv("VOXEL_ROUTER_DEV_SECRET_KEY"):

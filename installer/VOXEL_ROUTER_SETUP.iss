@@ -1,9 +1,14 @@
-; VOXEL ROUTER DESKTOP — instalador Windows (Inno Setup 6)
-; Pré-requisito de build: coloque Orthanc e seus plugins homologados em vendor\orthanc\.
+; VOXEL ROUTER DESKTOP — instalador único Windows (Inno Setup 6)
+; Pré-requisito de build: vendor\orthanc\Orthanc.exe e plugins homologados.
 #define AppName "VOXEL Router"
 #define AppVersion "1.0.0"
 #define AppPublisher "VOXEL"
-#define AppExeName "VOXELRouter.exe"
+#define RouterExeName "VOXELRouter.exe"
+#define RouterServiceExeName "VOXELRouterService.exe"
+#define OrthancServiceExeName "VOXELOrthancService.exe"
+#define DiagnosticsExeName "VOXELDiagnostics.exe"
+#define RouterServiceName "VOXELRouter"
+#define OrthancServiceName "VOXELOrthanc"
 
 [Setup]
 AppId={{4970E917-108A-4F1A-AC47-9E3A1A005A12}
@@ -18,7 +23,7 @@ PrivilegesRequiredOverridesAllowed=dialog commandline
 OutputDir=..\dist
 OutputBaseFilename=VOXEL_ROUTER_SETUP
 SetupIconFile=..\frontend\static\img\router.ico
-UninstallDisplayIcon={app}\{#AppExeName}
+UninstallDisplayIcon={app}\{#RouterExeName}
 Compression=lzma2/ultra64
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -33,6 +38,8 @@ Name: "ptbr"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
 [Files]
 Source: "..\dist\VOXELRouter\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 Source: "..\dist\VOXELRouterService\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
+Source: "..\dist\VOXELOrthancService\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
+Source: "..\dist\VOXELDiagnostics\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 Source: "..\vendor\orthanc\*"; DestDir: "{app}\orthanc"; Flags: recursesubdirs ignoreversion
 Source: "..\config\default.json"; DestDir: "{commonappdata}\VOXEL\Router\config"; DestName: "router.json"; Flags: onlyifdoesntexist
 Source: "..\frontend\static\img\router.ico"; DestDir: "{app}\assets"; Flags: ignoreversion
@@ -41,34 +48,37 @@ Source: "..\frontend\static\img\router.ico"; DestDir: "{app}\assets"; Flags: ign
 Name: "{commonappdata}\VOXEL\Router\config"
 Name: "{commonappdata}\VOXEL\Router\database"
 Name: "{commonappdata}\VOXEL\Router\logs"
+Name: "{commonappdata}\VOXEL\Router\queue"
 Name: "{commonappdata}\VOXEL\Router\storage"
+Name: "{commonappdata}\VOXEL\Router\orthanc"
+Name: "{commonappdata}\VOXEL\Router\orthanc\storage"
+Name: "{commonappdata}\VOXEL\Router\orthanc\database"
 Name: "{commonappdata}\VOXEL\Router\certificates"
 Name: "{commonappdata}\VOXEL\Router\cache"
 Name: "{commonappdata}\VOXEL\Router\backup"
 
 [Icons]
-Name: "{group}\VOXEL Router"; Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\assets\router.ico"
-Name: "{autodesktop}\VOXEL Router"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon; IconFilename: "{app}\assets\router.ico"
+Name: "{group}\VOXEL Router"; Filename: "http://127.0.0.1:8765"; IconFilename: "{app}\assets\router.ico"
+Name: "{autodesktop}\VOXEL Router"; Filename: "http://127.0.0.1:8765"; Tasks: desktopicon; IconFilename: "{app}\assets\router.ico"
+Name: "{group}\Diagnóstico de instalação"; Filename: "{app}\{#DiagnosticsExeName}"; IconFilename: "{app}\assets\router.ico"
 
 [Tasks]
 Name: "desktopicon"; Description: "Criar atalho na área de trabalho"; GroupDescription: "Atalhos adicionais:"
 
 [Run]
-Filename: "{app}\VOXELRouterService.exe"; Parameters: "--startup auto install"; Flags: runhidden waituntilterminated
-Filename: "sc.exe"; Parameters: "failure VOXELRouterEngine reset= 86400 actions= restart/60000/restart/60000/restart/120000"; Flags: runhidden waituntilterminated
-Filename: "sc.exe"; Parameters: "start VOXELRouterEngine"; Flags: runhidden waituntilterminated
-Filename: "{app}\orthanc\Orthanc.exe"; Parameters: "--install --name \"VOXEL Orthanc Service\" \"{commonappdata}\VOXEL\Router\config\orthanc.json\""; Flags: runhidden waituntilterminated; Check: FileExists(ExpandConstant('{app}\orthanc\Orthanc.exe'))
-Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=\"VOXEL Router DICOM SCP\" dir=in action=allow protocol=TCP localport=4242 profile=private"; Flags: runhidden waituntilterminated
-Filename: "{app}\{#AppExeName}"; Description: "Abrir VOXEL Router"; Flags: nowait postinstall skipifsilent
+Filename: "http://127.0.0.1:8765"; Description: "Abrir Dashboard do VOXEL Router"; Flags: shellexec nowait postinstall skipifsilent; Check: InstallVerified
 
 [UninstallRun]
-Filename: "sc.exe"; Parameters: "stop VOXELRouterEngine"; Flags: runhidden waituntilterminated
-Filename: "{app}\VOXELRouterService.exe"; Parameters: "remove"; Flags: runhidden waituntilterminated; Check: FileExists(ExpandConstant('{app}\VOXELRouterService.exe'))
+Filename: "sc.exe"; Parameters: "stop {#RouterServiceName}"; Flags: runhidden waituntilterminated
+Filename: "sc.exe"; Parameters: "stop {#OrthancServiceName}"; Flags: runhidden waituntilterminated
+Filename: "{app}\{#RouterServiceExeName}"; Parameters: "remove"; Flags: runhidden waituntilterminated; Check: FileExists(ExpandConstant('{app}\{#RouterServiceExeName}'))
+Filename: "{app}\{#OrthancServiceExeName}"; Parameters: "remove"; Flags: runhidden waituntilterminated; Check: FileExists(ExpandConstant('{app}\{#OrthancServiceExeName}'))
 Filename: "netsh.exe"; Parameters: "advfirewall firewall delete rule name=\"VOXEL Router DICOM SCP\""; Flags: runhidden waituntilterminated
+Filename: "netsh.exe"; Parameters: "advfirewall firewall delete rule name=\"VOXEL Orthanc DICOM\""; Flags: runhidden waituntilterminated
 
 [Code]
 var
-  DeleteDataPage: TInputOptionWizardPage;
+  InstallVerified: Boolean;
 
 function CmdLineHasSilentFlag(): Boolean;
 begin
@@ -81,24 +91,161 @@ begin
     WizardSilent := True;
     Silent := True;
   end;
+  InstallVerified := False;
   Result := True;
 end;
 
-procedure InitializeWizard();
+function ExecuteAndCheck(const Filename, Parameters, Description: String): Boolean;
+var
+  ResultCode: Integer;
 begin
-  DeleteDataPage := CreateInputOptionPage(wpSelectTasks,
-    'Dados locais', 'Escolha o comportamento de desinstalação',
-    'Na desinstalação, dados de estudos nunca serão excluídos sem confirmação explícita.', True, False);
-  DeleteDataPage.Add('Manter dados operacionais locais (recomendado)');
-  DeleteDataPage.Add('Excluir dados locais durante a desinstalação');
-  DeleteDataPage.SelectedValueIndex := 0;
+  Log(Description + ': ' + Filename + ' ' + Parameters);
+  Result := Exec(Filename, Parameters, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+  if not Result then Log(Description + ' falhou com código ' + IntToStr(ResultCode));
 end;
 
-procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+function BoolText(const Value: Boolean): String;
 begin
-  if CurUninstallStep = usPostUninstall then begin
-    if DeleteDataPage.SelectedValueIndex = 1 then begin
-      DelTree(ExpandConstant('{commonappdata}\VOXEL\Router'), True, True, True);
-    end;
+  if Value then Result := 'True' else Result := 'False';
+end;
+
+function ServiceExists(const ServiceName: String): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := Exec(ExpandConstant('{cmd}'), '/c sc.exe query ' + ServiceName + ' >nul 2>&1', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
+function StartService(const ServiceName: String): Boolean;
+begin
+  Result := ExecuteAndCheck('sc.exe', 'start ' + ServiceName, 'Iniciar serviço ' + ServiceName);
+  if not Result then begin
+    { O serviço pode já estar em execução; o diagnóstico final confirma o estado real. }
+    Result := ServiceExists(ServiceName);
   end;
 end;
+
+function RunCritical(const Filename, Parameters, Component: String): Boolean;
+var
+  Choice: Integer;
+  ResultCode: Integer;
+begin
+  while True do begin
+    if Exec(Filename, Parameters, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0) then begin
+      Result := True;
+      exit;
+    end;
+    Log(Component + ' falhou com código ' + IntToStr(ResultCode));
+    Choice := MsgBox(
+      Component + ': FALHA.' + #13#10#13#10 +
+      'Sim: Tentar novamente.' + #13#10 +
+      'Não: Executar diagnóstico e continuar sem declarar a instalação concluída.' + #13#10 +
+      'Cancelar: Encerrar o instalador.',
+      mbError, MB_YESNOCANCEL);
+    if Choice = IDYES then begin
+      continue;
+    end;
+    if Choice = IDNO then begin
+      Exec(ExpandConstant('{app}\{#DiagnosticsExeName}'), '', '', SW_SHOW, ewNoWait, ResultCode);
+      Result := False;
+      exit;
+    end;
+    Abort;
+  end;
+end;
+
+procedure StopServiceIfInstalled(const ServiceName: String);
+begin
+  if ServiceExists(ServiceName) then begin
+    ExecuteAndCheck('sc.exe', 'stop ' + ServiceName, 'Parar serviço para atualização ' + ServiceName);
+  end;
+end;
+
+procedure LogExistingInstallation();
+begin
+  Log('Detecção Router: ' + BoolText(FileExists(ExpandConstant('{app}\{#RouterExeName}'))));
+  Log('Detecção Orthanc: ' + BoolText(FileExists(ExpandConstant('{app}\orthanc\Orthanc.exe'))));
+  Log('Detecção configuração: ' + BoolText(FileExists(ExpandConstant('{commonappdata}\VOXEL\Router\config\orthanc.json'))));
+  Log('Detecção storage: ' + BoolText(DirExists(ExpandConstant('{commonappdata}\VOXEL\Router\orthanc\storage'))));
+  Log('Detecção serviço Router: ' + BoolText(ServiceExists('{#RouterServiceName}')));
+  Log('Detecção serviço Orthanc: ' + BoolText(ServiceExists('{#OrthancServiceName}')));
+end;
+
+procedure SetInstallationIncomplete();
+begin
+  InstallVerified := False;
+  WizardForm.FinishedLabel.Caption :=
+    'A instalação requer diagnóstico adicional. O Dashboard não será aberto automaticamente. ' +
+    'Use o atalho Diagnóstico de instalação depois de corrigir a falha do componente informado.';
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssInstall then begin
+    LogExistingInstallation();
+    StopServiceIfInstalled('{#RouterServiceName}');
+    StopServiceIfInstalled('{#OrthancServiceName}');
+  end;
+
+  if CurStep = ssPostInstall then begin
+    { Router instalado e Orthanc instalado pelo mesmo VOXEL_ROUTER_SETUP.exe. }
+    if not FileExists(ExpandConstant('{app}\{#RouterExeName}')) then begin
+      SetInstallationIncomplete();
+      exit;
+    end;
+    if not FileExists(ExpandConstant('{app}\orthanc\Orthanc.exe')) then begin
+      SetInstallationIncomplete();
+      exit;
+    end;
+
+    { Preserva orthanc.json existente em updates; cria somente na primeira instalação. }
+    if not FileExists(ExpandConstant('{commonappdata}\VOXEL\Router\config\orthanc.json')) then begin
+      if not RunCritical(ExpandConstant('{app}\{#OrthancServiceExeName}'), '--configure', 'Configurar Orthanc') then begin
+        SetInstallationIncomplete();
+        exit;
+      end;
+    end;
+
+    if not ServiceExists('{#OrthancServiceName}') then begin
+      if not RunCritical(ExpandConstant('{app}\{#OrthancServiceExeName}'), '--startup auto install', 'Instalar serviço VOXEL Orthanc') then begin
+        SetInstallationIncomplete();
+        exit;
+      end;
+    end;
+    if not RunCritical('sc.exe', 'failure {#OrthancServiceName} reset= 86400 actions= restart/60000/restart/60000/restart/120000', 'Configurar recuperação VOXEL Orthanc') then begin
+      SetInstallationIncomplete();
+      exit;
+    end;
+    if not RunCritical('sc.exe', 'start {#OrthancServiceName}', 'Iniciar VOXEL Orthanc') then begin
+      SetInstallationIncomplete();
+      exit;
+    end;
+
+    if not ServiceExists('{#RouterServiceName}') then begin
+      if not RunCritical(ExpandConstant('{app}\{#RouterServiceExeName}'), '--startup auto install', 'Instalar serviço VOXEL Router') then begin
+        SetInstallationIncomplete();
+        exit;
+      end;
+    end;
+    if not RunCritical('sc.exe', 'failure {#RouterServiceName} reset= 86400 actions= restart/60000/restart/60000/restart/120000', 'Configurar recuperação VOXEL Router') then begin
+      SetInstallationIncomplete();
+      exit;
+    end;
+    if not RunCritical('sc.exe', 'start {#RouterServiceName}', 'Iniciar VOXEL Router') then begin
+      SetInstallationIncomplete();
+      exit;
+    end;
+
+    ExecuteAndCheck('netsh.exe', 'advfirewall firewall add rule name=\"VOXEL Router DICOM SCP\" dir=in action=allow protocol=TCP localport=4242 profile=private', 'Configurar firewall Router');
+    ExecuteAndCheck('netsh.exe', 'advfirewall firewall add rule name=\"VOXEL Orthanc DICOM\" dir=in action=allow protocol=TCP localport=4243 profile=private', 'Configurar firewall Orthanc');
+
+    if not RunCritical(ExpandConstant('{app}\{#DiagnosticsExeName}'), '', 'Diagnóstico final Router e Orthanc') then begin
+      SetInstallationIncomplete();
+      exit;
+    end;
+    InstallVerified := True;
+  end;
+end;
+
+{ Nenhum diretório em ProgramData é removido na desinstalação normal. Estudos DICOM, índices,
+  fila, logs e configurações permanecem disponíveis para atualização, recuperação ou rollback. }

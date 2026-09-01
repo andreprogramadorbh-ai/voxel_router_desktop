@@ -35,6 +35,10 @@ dev = [
 [project.scripts]
 voxel-router = "app.main:run"
 voxel-router-service = "app.service_main:run"
+voxel-orthanc-service = "app.orthanc.service_main:run"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

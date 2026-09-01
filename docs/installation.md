@@ -1,23 +1,31 @@
 # Instalação Windows — VOXEL Router Desktop
 
-Este guia é destinado ao time de TI da VOXEL. A implantação requer estação Windows x64 homologada, privilégios de administrador **somente durante instalação** e conectividade com as modalidades e destinos necessários. Após a instalação, os processos de operação devem usar contas de serviço com privilégio mínimo.
+Este guia é destinado ao time de TI da VOXEL. A implantação requer estação Windows x64 homologada, privilégios de administrador **somente durante instalação** e conectividade com as modalidades e destinos necessários. Após a instalação, os processos operam como serviços Windows separados, com privilégios mínimos.
 
 ## Pré-validação
 
 | Verificação | Critério de aceite |
 |---|---|
-| Sistema operacional | Windows x64 suportado pela política VOXEL e atualizado |
-| Disco | Capacidade reservada para retenção local, mais margem para incidentes de conectividade |
-| Rede DICOM | A modalidade alcança o IP do Router na porta SCP configurada; padrão `4242/TCP` |
-| Rede cloud | O Router alcança somente os endpoints/destinos aprovados; TLS/certificados homologados quando aplicável |
-| Orthanc | Pacote binário e plugins homologados, licenças verificadas, sem configuração de teste |
-| Segurança | Senha de bootstrap fornecida por canal autorizado; nunca anexada a ticket, script versionado ou log |
+| Sistema operacional | Windows x64 suportado pela política VOXEL e atualizado. |
+| Disco | Capacidade reservada para retenção local, Orthanc e margem para indisponibilidade de conectividade. |
+| Rede DICOM | Modalidades alcançam o Router em `4242/TCP`; o Orthanc utiliza `4243/TCP` somente quando aprovado no cenário local. |
+| Rede cloud | O Router alcança exclusivamente os endpoints/destinos aprovados; TLS e certificados são homologados quando aplicável. |
+| Orthanc | Binário e plugins homologados estão incluídos no instalador; não é necessária instalação manual. |
+| Segurança | Senha de bootstrap é fornecida por canal autorizado; nunca por ticket, script versionado ou log. |
 
-## Instalação interativa
+## Instalador único
 
-Execute `VOXEL_ROUTER_SETUP.exe` como administrador. O instalador instala os binários em `C:\Program Files\VOXEL\Router` e cria os dados persistentes em `C:\ProgramData\VOXEL\Router`. A separação é intencional: banco, filas, estudos, logs, certificados e backups **não** devem ficar em `Program Files`.
+Execute `VOXEL_ROUTER_SETUP.exe` como administrador. O instalador inclui dois binários independentes: `VOXELRouter.exe`/`VOXELRouterService.exe` e `Orthanc.exe`/`VOXELOrthancService.exe`. O Orthanc nunca é incorporado ao processo Python do Router, mas é instalado pelo mesmo pacote.
 
-Após a cópia, o instalador registra `VOXEL Router Engine`, instala ou configura `VOXEL Orthanc Service`, habilita reinício do Router Engine após falha e cria somente a regra privada de firewall `VOXEL Router DICOM SCP` para a porta 4242. Não há regra de firewall para a interface administrativa: a API é publicada em loopback.
+A instalação detecta Router, Orthanc, `orthanc.json`, storage e serviços já existentes. Em atualização, os binários são atualizados sem reinstalação desnecessária do Orthanc válido e sem remoção de dados persistentes.
+
+```text
+Instalar Router → confirmar binários → instalar Orthanc → confirmar binário
+→ criar storage/configuração → criar serviço Orthanc → iniciar e verificar Orthanc
+→ criar serviço Router → iniciar e verificar Router → diagnóstico final → conclusão
+```
+
+O instalador só declara conclusão após verificar binários, serviços, armazenamento, portas e health checks. Se o Orthanc falhar, o operador pode tentar novamente ou abrir o atalho **Diagnóstico de instalação**. O Dashboard não é aberto automaticamente enquanto uma validação crítica estiver pendente.
 
 ## Instalação silenciosa
 
@@ -27,43 +35,43 @@ Para ferramentas de gestão corporativa, execute:
 VOXEL_ROUTER_SETUP.exe /S
 ```
 
-O uso do modo silencioso exige pré-provisionamento controlado. Depois de instalar, utilize o mecanismo organizacional de segredos para definir `VOXEL_ROUTER_BOOTSTRAP_PASSWORD` no processo de provisionamento e remova a variável logo após sua utilização. Nunca passe senhas em argumento de linha de comando.
+A instalação silenciosa cria a configuração inicial e serviços, mas o provisionamento da credencial administrativa continua sob controle do processo de TI aprovado. Nunca passe senhas na linha de comando.
 
 ```powershell
 $env:VOXEL_ROUTER_BOOTSTRAP_PASSWORD = '<segredo aprovado>'
-& 'C:\Program Files\VOXEL\Router\VOXELRouter.exe' # inicia a interface local
-# Executar provisionamento pelo mecanismo de deployment aprovado e remover o segredo imediatamente.
+python 'C:\Program Files\VOXEL\Router\scripts\provision_admin.py' --username voxeladmin --non-interactive
 Remove-Item Env:VOXEL_ROUTER_BOOTSTRAP_PASSWORD
 ```
 
 ## Primeira configuração
 
-Na primeira abertura em [http://127.0.0.1:8765](http://127.0.0.1:8765), a interface exibe a tela de provisionamento local. Informe `voxeladmin` ou o usuário de administração aprovado e a senha de bootstrap. O primeiro login exige a troca imediata da senha. A senha é protegida por Argon2id; o produto não possui senha de operação codificada.
+Após a saúde do Router ser aprovada, abra [http://127.0.0.1:8765](http://127.0.0.1:8765). Na primeira abertura, a interface exibe somente o provisionamento local. Informe `voxeladmin` ou o usuário de administração aprovado e a senha de bootstrap. O primeiro login exige a troca imediata da senha; senhas são protegidas por Argon2id e nunca são gravadas em texto puro.
 
-Configure o AE Title e porta locais, em seguida cadastre modalidades permitidas e destino DICOM/VOXEL Cloud. Use C-ECHO para validar as associações antes de liberar C-STORE em produção. Quando TLS estiver habilitado, instale certificados sob `C:\ProgramData\VOXEL\Router\certificates` com ACL restritiva e valide a cadeia de confiança.
+## Serviços, portas e dados
 
-## Serviços e dados
-
-| Item | Nome/caminho | Verificação |
+| Item | Serviço/caminho | Verificação |
 |---|---|---|
-| Engine | `VOXEL Router Engine` | `sc query VOXELRouterEngine` |
-| Orthanc | `VOXEL Orthanc Service` | `sc query "VOXEL Orthanc Service"` |
+| Router | `VOXELRouter` / **VOXEL Router** | `sc query VOXELRouter` |
+| Orthanc | `VOXELOrthanc` / **VOXEL Orthanc** | `sc query VOXELOrthanc` |
 | API administrativa | `127.0.0.1:8765` | `http://127.0.0.1:8765/health` |
-| SCP DICOM | `0.0.0.0:4242` padrão | C-ECHO a partir de nó autorizado |
-| SQLite | `ProgramData\VOXEL\Router\database\voxel_router.db` | Não copiar com a Engine em execução sem backup consistente |
-| Logs | `ProgramData\VOXEL\Router\logs\router.jsonl` | Confirmar que não contém senha/token/PHI desnecessário |
-| Dados temporários | `ProgramData\VOXEL\Router\storage` | Confirmar limites e retenção |
+| SCP DICOM Router | `0.0.0.0:4242` padrão | C-ECHO a partir de nó autorizado. |
+| DICOM Orthanc | `4243/TCP` | Listener local do serviço Orthanc. |
+| REST Orthanc | `127.0.0.1:8042` | `http://127.0.0.1:8042/system`, autenticado internamente. |
+| Configuração | `ProgramData\VOXEL\Router\config` | `router.json` e `orthanc.json` preservados em update. |
+| Storage Orthanc | `ProgramData\VOXEL\Router\orthanc\storage` | Nunca excluir em atualização ou desinstalação normal. |
+| Índice Orthanc | `ProgramData\VOXEL\Router\orthanc\database` | Nunca excluir em atualização ou desinstalação normal. |
+| Fila e logs | `ProgramData\VOXEL\Router\queue` e `logs` | Preservar para recuperação e auditoria. |
 
-## Atualização e rollback
+Não há regra de firewall para a interface administrativa ou REST Orthanc, que usam loopback. As regras de firewall são limitadas às portas DICOM privadas necessárias.
 
-Interrompa novas alterações administrativas, confirme a saúde da fila e faça backup consistente de `config`, `database` e `certificates`. Instale a versão assinada sobre a anterior sem remover `ProgramData`. Após o serviço iniciar, valide `/health`, C-ECHO e a presença dos itens pendentes da fila. Caso seja necessário rollback, pare somente a Engine, preserve integralmente `ProgramData`, reinstale o binário anterior aprovado e execute a reconciliação de fila. Não exclua estudos para tentar corrigir uma atualização.
+## Atualização, rollback e desinstalação
 
-## Desinstalação
+Interrompa alterações administrativas, valide a fila e faça backup consistente de `config`, `database` e `certificates`. Instale a versão assinada sobre a anterior sem remover `ProgramData`. Após reinício, consulte `/health`, valide Orthanc em `/health/orthanc`, teste C-ECHO e confirme os itens pendentes de fila.
 
-A desinstalação deve perguntar se os dados locais serão preservados. A opção padrão é manter dados. Só autorize remoção após confirmar que estudos pendentes foram enviados e validados ou após executar a retenção institucional aprovada. A eliminação de estudos sem confirmação explícita é vedada.
+O rollback consiste em parar somente o Router, preservar integralmente `ProgramData`, restaurar binários homologados e iniciar primeiro o Orthanc, depois o Router. A desinstalação normal remove serviços e binários, mas preserva por padrão `config`, `orthanc\storage`, `orthanc\database`, `queue`, `logs` e quaisquer estudos DICOM. A remoção desses dados exige processo operacional separado e autorização explícita.
 
 ## Referências
 
-[1]: https://www.orthanc-server.com/static.php?page=users-manual "Orthanc Book — User Manual"
+[1]: https://orthanc.uclouvain.be/book/users/configuration.html "Orthanc Book — Configuration"
 [2]: https://learn.microsoft.com/windows-server/administration/windows-commands/sc-query "sc query — Microsoft Learn"
 [3]: https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html "OWASP Secrets Management Cheat Sheet"

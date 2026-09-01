@@ -72,7 +72,7 @@ class OrthancClient:
 class OrthancServiceController:
     """Controle do serviço exclusivamente em Windows; chamadas falham de forma segura nos demais SOs."""
 
-    def __init__(self, service_name: str = "VOXEL Orthanc Service") -> None:
+    def __init__(self, service_name: str = "VOXELOrthanc") -> None:
         self.service_name = service_name
 
     def status(self) -> str:

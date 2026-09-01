@@ -28,9 +28,15 @@ class HealthMonitor:
         storage = self.storage()
         return {
             "router": {"status": "ONLINE"},
-            "orthanc": {"status": orthanc.status, "detail": orthanc.detail},
+            # OrthancHealth é obtido por requisição REST real a /system, nunca por estado simulado.
+            "orthanc": {
+                "status": orthanc.status,
+                "detail": orthanc.detail,
+                "dicom_port": int(self.settings.get("orthanc", "dicom_port", default=4243)),
+                "http_port": int(self.settings.get("orthanc", "http_port", default=8042)),
+            },
             "cloud": {"status": cloud_status},
-            "dicom": {"status": "LISTENING" if self.scp.running else "OFFLINE", "ae_title": self.scp.ae_title, "port": self.scp.port},
+            "dicom": {"status": "ONLINE" if self.scp.running else "OFFLINE", "ae_title": self.scp.ae_title, "port": self.scp.port},
             "storage": storage,
             "network": await self.network(),
         }

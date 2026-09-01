@@ -24,7 +24,11 @@
   },
   "orthanc": {
     "url": "http://127.0.0.1:8042",
-    "service_name": "VOXEL Orthanc Service",
+    "service_name": "VOXELOrthanc",
+    "service_display_name": "VOXEL Orthanc",
+    "ae_title": "VOXEL_ORTHANC",
+    "dicom_port": 4243,
+    "http_port": 8042,
     "timeout_seconds": 10,
     "enabled": true
   },
