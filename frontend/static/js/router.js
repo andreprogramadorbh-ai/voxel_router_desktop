@@ -2,7 +2,8 @@
   'use strict';
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
-  const state = { system: null, user: null };
+  const AUTH_STATES = Object.freeze({ CHECKING: 'checking', UNAUTHENTICATED: 'unauthenticated', AUTHENTICATED: 'authenticated' });
+  const state = { system: null, user: null, auth: AUTH_STATES.CHECKING };
   const labels = { 1: 'CRITICAL', 2: 'HIGH', 3: 'NORMAL', 4: 'LOW' };
 
   // A interface é uma SPA local. A posição anterior nunca deve reaparecer após autenticação ou troca de seção.
@@ -57,36 +58,34 @@
     requestAnimationFrame(scrollToTop);
   }
 
-  async function verifyBootstrap() {
-    const bootstrap = await api('/api/auth/bootstrap-status');
-    $('#provision-form').hidden = bootstrap.provisioned;
-    $('#auth-form').hidden = !bootstrap.provisioned;
+  function renderAuthChecking() {
+    state.auth = AUTH_STATES.CHECKING;
+    state.user = null;
+    $('#app-view').hidden = true;
+    $('#login-view').hidden = false;
+    $('#login-view').setAttribute('aria-busy', 'true');
+    $('#auth-checking').hidden = false;
+    $('#provision-form').hidden = true;
+    $('#auth-form').hidden = true;
     scrollToTop();
-    if (bootstrap.provisioned) $('#username').focus();
   }
 
-  function replacePath(path) {
-    if (location.pathname !== path) history.replaceState(null, '', path);
+  function renderAuthScreen(provisioned) {
+    state.auth = AUTH_STATES.UNAUTHENTICATED;
+    state.user = null;
+    $('#app-view').hidden = true;
+    $('#login-view').hidden = false;
+    $('#login-view').setAttribute('aria-busy', 'false');
+    $('#auth-checking').hidden = true;
+    $('#provision-form').hidden = provisioned;
+    $('#auth-form').hidden = !provisioned;
+    scrollToTop();
+    if (provisioned) $('#username').focus();
   }
 
-  async function initialize() {
-    try {
-      state.user = await api('/api/auth/me');
-      if (state.user.must_change_password) {
-        replacePath('/');
-        scrollToTop();
-        $('#password-dialog').showModal();
-      } else {
-        showApp();
-      }
-    } catch (_) {
-      // URLs administrativas não autenticadas retornam explicitamente à tela de login.
-      replacePath('/');
-      await verifyBootstrap();
-    }
-  }
-
-  function showApp() {
+  function renderApplication(user) {
+    state.auth = AUTH_STATES.AUTHENTICATED;
+    state.user = user;
     $('#login-message').textContent = '';
     $('#login-view').hidden = true;
     $('#app-view').hidden = false;
@@ -94,6 +93,38 @@
     scrollToTop();
     visiblePage('dashboard');
     window.setInterval(() => { $('#clock').textContent = new Date().toLocaleString('pt-BR'); }, 1000);
+  }
+
+  async function verifyBootstrap() {
+    const bootstrap = await api('/api/auth/bootstrap-status');
+    renderAuthScreen(bootstrap.provisioned);
+  }
+
+  function replacePath(path) {
+    if (location.pathname !== path) history.replaceState(null, '', path);
+  }
+
+  async function initialize() {
+    renderAuthChecking();
+    try {
+      const user = await api('/api/auth/me');
+      if (user.must_change_password) {
+        replacePath('/');
+        renderAuthScreen(true);
+        $('#password-dialog').showModal();
+      } else {
+        renderApplication(user);
+      }
+    } catch (_) {
+      // URLs administrativas não autenticadas retornam explicitamente à tela de login.
+      replacePath('/');
+      try {
+        await verifyBootstrap();
+      } catch (error) {
+        $('#auth-checking').textContent = 'Não foi possível verificar o acesso local. Tente atualizar a página.';
+        console.error(error);
+      }
+    }
   }
 
   async function loadDashboard() {
@@ -188,12 +219,30 @@
     });
     $('#form-login').addEventListener('submit', async (event) => {
       event.preventDefault();
-      try { state.user = await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ username: $('#username').value, password: $('#password').value }) }); if (state.user.must_change_password) $('#password-dialog').showModal(); else showApp(); } catch (error) { showMessage('Usuário ou senha inválidos.'); }
+      try {
+        await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ username: $('#username').value, password: $('#password').value }) });
+        const user = await api('/api/auth/me');
+        if (user.must_change_password) {
+          renderAuthScreen(true);
+          $('#password-dialog').showModal();
+        } else {
+          renderApplication(user);
+        }
+      } catch (error) {
+        renderAuthScreen(true);
+        showMessage('Usuário ou senha inválidos.');
+      }
     });
     $('#toggle-password').addEventListener('click', () => { const field = $('#password'); field.type = field.type === 'password' ? 'text' : 'password'; $('#toggle-password').textContent = field.type === 'password' ? 'Mostrar' : 'Ocultar'; });
     $('#force-password-form').addEventListener('submit', async (event) => {
       event.preventDefault(); const form = new FormData(event.target);
-      try { await api('/api/auth/change-password', { method: 'POST', body: JSON.stringify(Object.fromEntries(form)) }); $('#password-dialog').close(); showMessage('Senha alterada. Entre novamente para continuar.', false); location.reload(); } catch (error) { $('#force-password-message').textContent = error.message; }
+      try {
+        await api('/api/auth/change-password', { method: 'POST', body: JSON.stringify(Object.fromEntries(form)) });
+        $('#password-dialog').close();
+        replacePath('/');
+        renderAuthScreen(true);
+        showMessage('Senha alterada. Entre novamente para continuar.', false);
+      } catch (error) { $('#force-password-message').textContent = error.message; }
     });
     $$('.nav-item').forEach(button => button.addEventListener('click', () => visiblePage(button.dataset.page)));
     $('#refresh-dashboard').addEventListener('click', loadDashboard);
@@ -208,7 +257,14 @@
     $('#settings-storage').addEventListener('submit', event => { event.preventDefault(); const form = new FormData(event.target); api('/api/settings/storage', { method: 'PATCH', body: JSON.stringify({ values: { retention_hours: Number(form.get('retention_hours')), auto_delete: form.get('auto_delete') === 'on' } }) }).then(() => alert('Política de retenção salva.')).catch(error => alert(error.message)); });
     $('#change-username').addEventListener('submit', event => { event.preventDefault(); api('/api/auth/username', { method: 'PUT', body: JSON.stringify(Object.fromEntries(new FormData(event.target))) }).then(() => alert('Usuário alterado.')).catch(error => alert(error.message)); });
     $('#change-password').addEventListener('submit', event => { event.preventDefault(); api('/api/auth/change-password', { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(event.target))) }).then(() => { alert('Senha alterada; entre novamente.'); location.reload(); }).catch(error => alert(error.message)); });
-    $('#logout').addEventListener('click', () => api('/api/auth/logout', { method: 'POST' }).finally(() => { scrollToTop(); location.replace('/'); }));
+    $('#logout').addEventListener('click', async () => {
+      renderAuthChecking();
+      try { await api('/api/auth/logout', { method: 'POST' }); }
+      finally {
+        replacePath('/');
+        await verifyBootstrap();
+      }
+    });
   }
 
   bindEvents(); initialize();

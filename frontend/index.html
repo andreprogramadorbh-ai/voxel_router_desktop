@@ -9,7 +9,7 @@
   <link rel="stylesheet" href="/assets/css/router.css">
 </head>
 <body>
-  <main id="login-view" class="login-layout">
+  <main id="login-view" class="login-layout" aria-busy="true">
     <section class="login-brand" aria-label="VOXEL Router">
       <img class="brand-logo" src="/assets/img/logo-voxel-pacs.png" width="1774" height="887" alt="VOXEL PACS — Smart Imaging. Secure Data. Better Care.">
       <div class="brand-title"><span>VOXEL</span> ROUTER</div>
@@ -29,7 +29,8 @@
           <button type="submit" class="primary">PROVISIONAR</button>
         </form>
       </div>
-      <div id="auth-form">
+      <p id="auth-checking" class="auth-checking" role="status">Verificando acesso local…</p>
+      <div id="auth-form" hidden>
         <p class="eyebrow">ACESSO ADMINISTRATIVO LOCAL</p>
         <h1>Entrar no Router</h1>
         <p>Use a conta administrativa configurada para este equipamento.</p>
