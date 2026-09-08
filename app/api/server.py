@@ -259,12 +259,16 @@ def create_app(engine: RouterEngine | None = None, start_engine: bool = False) -
 
     @app.post("/api/non-dicom/config")
     async def update_non_dicom_config(payload: NonDicomConfigPayload, request: Request, user: dict[str, Any] = Depends(configured_user)) -> dict[str, Any]:
-        allowed = {"enabled", "root_path", "input_mode", "allowed_local_roots", "polling_interval_seconds", "max_attempts", "retry_delays_seconds", "delete_file_after_success", "max_file_size_mb", "max_xml_size_kb", "allowed_mime_types", "voxel_pacs_url", "status_path", "pending_path", "document_path", "metadata_path", "upload_path", "acknowledge_path", "status_update_path", "site_id", "router_id", "timeout_seconds", "tls_enabled"}
+        allowed = {"enabled", "root_path", "input_mode", "allowed_local_roots", "polling_interval_seconds", "max_attempts", "retry_delays_seconds", "delete_file_after_success", "max_file_size_mb", "max_xml_size_kb", "allowed_mime_types", "voxel_pacs_url", "status_path", "pending_path", "document_path", "metadata_path", "upload_path", "acknowledge_path", "status_update_path", "site_id", "router_id", "timeout_seconds", "tls_enabled", "philips_pull_enabled", "philips_input_path", "philips_completed_path", "philips_failed_path"}
         if not set(payload.values).issubset(allowed):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Alteração de configuração Non-DICOM não permitida")
         root = payload.values.get("root_path")
         if root and not (Path(str(root)).is_absolute() or PureWindowsPath(str(root)).is_absolute()):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Diretório raiz deve ser absoluto")
+        for key in ("philips_input_path", "philips_completed_path", "philips_failed_path"):
+            value = payload.values.get(key)
+            if value and not (Path(str(value)).is_absolute() or PureWindowsPath(str(value)).is_absolute()):
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "Diretório Philips deve ser absoluto")
         if payload.values.get("input_mode") and payload.values["input_mode"] not in {"LOCAL_PATH", "VOXEL_MANAGED_FILE"}:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Modo de arquivo Non-DICOM inválido")
         try:

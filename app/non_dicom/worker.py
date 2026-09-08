@@ -15,6 +15,7 @@ from app.core.database import Database
 from app.core.logging import get_logger
 from app.non_dicom.cloud import NonDicomCloudClient, NonDicomCloudConfig
 from app.non_dicom.manager import NonDicomManager
+from app.non_dicom.philips_pull import PhilipsPullDelivery
 from app.non_dicom.parsers import NonDicomParseError, parse_xml, safe_file_name
 from app.non_dicom.storage import NonDicomPaths, NonDicomStorage, NonDicomStorageError
 from app.security.secrets import SecretStoreError, WindowsSecretStore
@@ -205,10 +206,15 @@ class NonDicomWorker:
         self.manager.recover_after_restart()
         try:
             while self._running:
-                await self.sync_pending_from_cloud()
-                self.scan_input()
-                while await self.process_once():
-                    pass
+                if bool(self.configured.get("philips_pull_enabled", False)):
+                    delivery = PhilipsPullDelivery(self.database, self.configured, self._client())
+                    await delivery.reconcile_receiver_outcomes()
+                    await delivery.claim_and_stage()
+                else:
+                    await self.sync_pending_from_cloud()
+                    self.scan_input()
+                    while await self.process_once():
+                        pass
                 self._last_sync = datetime.now(UTC).isoformat()
                 await asyncio.sleep(max(1, int(self.configured.get("polling_interval_seconds", 5))))
         finally:

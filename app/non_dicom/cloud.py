@@ -75,14 +75,30 @@ class NonDicomCloudClient:
     async def update_status(self, submission_id: str, status: str, error: str | None = None) -> dict[str, Any]:
         return await self._request("POST", self.config.status_update_path, {"id": submission_id, "status": status, "error": error})
 
+    async def philips_claim(self) -> dict[str, Any]:
+        return await self._request("POST", self.config.pending_path)
+
+    async def philips_document(self, job_id: str, lease_token: str) -> bytes:
+        response = await self._response("GET", self.config.document_path.format(id=job_id), headers={**self._headers(), "X-VOXEL-LEASE-TOKEN": lease_token})
+        return response.content
+
+    async def philips_status(self, job_id: str, lease_token: str, status: str, reference: str | None = None, error_category: str | None = None) -> dict[str, Any]:
+        payload = {"lease_token": lease_token, "status": status}
+        if reference:
+            payload["reference"] = reference
+        if error_category:
+            payload["error_category"] = error_category
+        return await self._request("POST", self.config.status_update_path.format(id=job_id), payload)
+
     async def _request(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         response = await self._response(method, path, json=body)
         return response.json() if response.content else {}
 
     async def _response(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         try:
+            request_headers = kwargs.pop("headers", None)
             async with httpx.AsyncClient(timeout=self.config.timeout_seconds, verify=self.config.tls_enabled) as client:
-                response = await client.request(method, self._url(path), headers=self._headers(), **kwargs)
+                response = await client.request(method, self._url(path), headers=request_headers or self._headers(), **kwargs)
                 response.raise_for_status()
                 return response
         except httpx.HTTPError as exc:

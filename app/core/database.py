@@ -8,7 +8,7 @@ from typing import Any, Iterator
 
 from app.config.settings import AppPaths
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -249,8 +249,19 @@ CREATE TABLE IF NOT EXISTS non_dicom_events (
 );
 CREATE INDEX IF NOT EXISTS idx_non_dicom_events_submission ON non_dicom_events(submission_id, id DESC);
 
+CREATE TABLE IF NOT EXISTS philips_pull_deliveries (
+    remote_job_id TEXT PRIMARY KEY,
+    lease_token TEXT NOT NULL,
+    xml_file_name TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('PACKAGE_SUBMITTED','RECEIVER_COMPLETED','RECEIVER_FAILED')),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_philips_pull_deliveries_status ON philips_pull_deliveries(status, updated_at);
+
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (1);
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (2);
+INSERT OR IGNORE INTO schema_migrations(version) VALUES (3);
 """
 
 
