@@ -137,6 +137,11 @@ class FailingClient(AcceptedClient):
         raise RuntimeError("endpoint indisponível")
 
 
+class DisabledDestinationClient(AcceptedClient):
+    async def status(self):
+        return {"status": "configured_disabled"}
+
+
 @pytest.mark.asyncio
 async def test_processing_success_moves_xml_to_completed(settings, database, monkeypatch):
     instance = worker(settings, database)
@@ -175,6 +180,20 @@ async def test_unconfigured_or_unavailable_cloud_is_reported(settings, database)
     assert (await instance.test_connection())["status"] == "DISCONNECTED"
     settings.update("non_dicom", {"voxel_pacs_url": "https://127.0.0.1:1"})
     assert (await instance.test_connection())["status"] == "DISCONNECTED"
+
+
+@pytest.mark.asyncio
+async def test_connection_accepts_authenticated_disabled_destination_without_queue(settings, database, monkeypatch):
+    instance = worker(settings, database)
+    monkeypatch.setattr(instance, "_client", lambda: DisabledDestinationClient())
+    result = await instance.test_connection()
+    assert result == {"status": "CONNECTED", "detail": "PACS respondeu; destino permanece desativado"}
+    assert instance.manager.stats()["pending"] == 0
+
+
+def test_legacy_status_path_is_mapped_to_authenticated_endpoint(settings, database):
+    settings.update("non_dicom", {"status_path": "/status"})
+    assert worker(settings, database)._client().config.status_path == "/api/voxel-desktop/v1/status"
 
 
 class PendingCloudClient(AcceptedClient):

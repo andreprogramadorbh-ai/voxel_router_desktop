@@ -76,7 +76,7 @@ class NonDicomWorker:
             pass
         return NonDicomCloudClient(
             NonDicomCloudConfig(
-                base_url=str(config.get("voxel_pacs_url", "")), status_path=str(config.get("status_path", "/status")),
+                base_url=str(config.get("voxel_pacs_url", "")), status_path=self._status_path(config),
                 pending_path=str(config.get("pending_path", "/non-dicom/pending")), document_path=str(config.get("document_path", "/non-dicom/documents/{id}")),
                 metadata_path=str(config.get("metadata_path", "/non-dicom/documents/{id}/metadata")), upload_path=str(config.get("upload_path", "/non-dicom/submissions")), acknowledge_path=str(config.get("acknowledge_path", "/non-dicom/acknowledge")),
                 status_update_path=str(config.get("status_update_path", "/non-dicom/status")), timeout_seconds=int(config.get("timeout_seconds", 15)),
@@ -84,6 +84,11 @@ class NonDicomWorker:
             ),
             token,
         )
+
+    @staticmethod
+    def _status_path(config: dict[str, Any]) -> str:
+        path = str(config.get("status_path", "")).strip()
+        return "/api/voxel-desktop/v1/status" if path in {"", "/status"} else path
 
     def _record_system_event(self, severity: str, code: str, message: str) -> None:
         with self.database.transaction() as connection:
@@ -194,9 +199,11 @@ class NonDicomWorker:
             self._cloud_status = "DISCONNECTED"
             return {"status": "DISCONNECTED", "detail": "URL do VOXEL PACS não configurada"}
         try:
-            await client.status()
+            response = await client.status()
             self._cloud_status = "CONNECTED"
-            return {"status": "CONNECTED", "detail": "Endpoint configurado respondeu"}
+            remote_status = str(response.get("status", "")) if isinstance(response, dict) else ""
+            detail = "PACS respondeu; destino permanece desativado" if remote_status == "configured_disabled" else "Endpoint configurado respondeu"
+            return {"status": "CONNECTED", "detail": detail}
         except Exception:
             self._cloud_status = "DISCONNECTED"
             return {"status": "DISCONNECTED", "detail": "Endpoint configurado indisponível"}

@@ -20,6 +20,12 @@ O módulo é **aditivo** ao VOXEL Router. Ele monitora XMLs de metadados no padr
 | Cloud | `NonDicomCloudClient` consulta status e envia a endpoints de configuração, com token do cofre de segredos. | URL, paths de status/consulta/envio/ack/status, TLS e timeout. |
 | UI/API | Endpoints `/api/non-dicom/*` exigem sessão com senha inicial alterada. | Root local e demais parâmetros não secretos. |
 
+## Teste de conectividade sem entrega
+
+O botão de teste consulta exclusivamente o endpoint autenticado de status do PACS. O Router envia Router ID, Site ID e o token que permanece no cofre local; o PACS aceita a consulta mesmo quando o destino está desativado e retorna somente o estado `configured_disabled`. Esse resultado confirma a comunicação de leitura, sem reivindicar jobs, acessar artefatos, iniciar o processador, montar XML/PDF ou alterar a fila.
+
+Configurações locais existentes que apontavam para o caminho legado de status são mapeadas pelo Router para o endpoint autenticado durante a leitura. A ativação do destino, a execução do processador e qualquer transmissão continuam sendo decisões operacionais separadas.
+
 ## Estados e transições
 
 ```text
