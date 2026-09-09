@@ -289,6 +289,18 @@ def create_app(engine: RouterEngine | None = None, start_engine: bool = False) -
         auth.audit(int(user["id"]), "TEST_NON_DICOM", "NON_DICOM", "config", client_ip(request), "SUCCESS" if directory_ok else "FAILURE")
         return {"directory": "OK" if directory_ok else "ERROR", "connection": connection, "root_path": str(worker.paths.root)}
 
+    @app.post("/api/non-dicom/manual-test")
+    async def run_non_dicom_manual_test(payload: dict[str, str], request: Request, user: dict[str, Any] = Depends(configured_user)) -> dict[str, str]:
+        if payload.get("confirmation") != "single-manual-test":
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Confirmação do teste manual é obrigatória")
+        try:
+            result = await current_engine.non_dicom.run_manual_test_once()
+            auth.audit(int(user["id"]), "RUN_NON_DICOM_MANUAL_TEST", "NON_DICOM", "manual-test", client_ip(request), "SUCCESS")
+            return result
+        except RuntimeError as exc:
+            auth.audit(int(user["id"]), "RUN_NON_DICOM_MANUAL_TEST", "NON_DICOM", "manual-test", client_ip(request), "FAILURE")
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+
     def get_non_dicom_submission(submission_id: str) -> dict[str, Any]:
         row = database.query_one("SELECT * FROM non_dicom_submissions WHERE id = ?", (submission_id,))
         if row is None:

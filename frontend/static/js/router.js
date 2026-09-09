@@ -264,6 +264,7 @@
     $('#refresh-dashboard').addEventListener('click', loadDashboard);
     $('#non-dicom-refresh').addEventListener('click', loadNonDicom);
     $('#non-dicom-test').addEventListener('click', () => api('/api/non-dicom/test', { method: 'POST' }).then(result => { alert(`Diretório: ${result.directory}\nVOXEL PACS: ${result.connection.status}`); loadNonDicom(); }).catch(error => alert(error.message)));
+    $('#non-dicom-manual-test').addEventListener('click', () => { if (!confirm('Buscar um único teste manual já preparado? Esta ação não processa a fila nem inicia o processador.')) return; api('/api/non-dicom/manual-test', { method: 'POST', body: JSON.stringify({ confirmation: 'single-manual-test' }) }).then(result => { alert(result.detail || result.status); loadNonDicom(); }).catch(error => alert(error.message)); });
     $('#non-dicom-test-directory').addEventListener('click', () => api('/api/non-dicom/test', { method: 'POST' }).then(result => alert(`Diretório: ${result.directory}\n${result.root_path}`)).catch(error => alert(error.message)));
     $('#non-dicom-process').addEventListener('click', () => api('/api/non-dicom/process', { method: 'POST' }).then(loadNonDicom).catch(error => alert(error.message)));
     $('#non-dicom-retry-all').addEventListener('click', () => { if (confirm('Reprocessar todas as tarefas Non-DICOM que falharam?')) api('/api/non-dicom/retry-all', { method: 'POST' }).then(loadNonDicom).catch(error => alert(error.message)); });

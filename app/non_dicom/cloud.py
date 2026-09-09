@@ -22,6 +22,9 @@ class NonDicomCloudConfig:
     upload_path: str
     acknowledge_path: str
     status_update_path: str
+    manual_claim_path: str
+    manual_document_path: str
+    manual_status_path: str
     timeout_seconds: int
     tls_enabled: bool
     site_id: str
@@ -89,6 +92,16 @@ class NonDicomCloudClient:
         if error_category:
             payload["error_category"] = error_category
         return await self._request("POST", self.config.status_update_path.format(id=job_id), payload)
+
+    async def manual_test_claim(self) -> dict[str, Any]:
+        return await self._request("POST", self.config.manual_claim_path)
+
+    async def manual_test_document(self, test_id: str, lease_token: str) -> bytes:
+        response = await self._response("GET", self.config.manual_document_path.format(id=test_id), headers={**self._headers(), "X-VOXEL-LEASE-TOKEN": lease_token})
+        return response.content
+
+    async def manual_test_status(self, test_id: str, lease_token: str, status: str) -> dict[str, Any]:
+        return await self._request("POST", self.config.manual_status_path.format(id=test_id), {"lease_token": lease_token, "status": status})
 
     async def _request(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         response = await self._response(method, path, json=body)

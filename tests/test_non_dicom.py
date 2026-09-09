@@ -142,6 +142,43 @@ class DisabledDestinationClient(AcceptedClient):
         return {"status": "configured_disabled"}
 
 
+class ManualTestClient:
+    configured = True
+
+    def __init__(self) -> None:
+        self.statuses: list[tuple[str, str, str]] = []
+
+    async def manual_test_claim(self):
+        return {
+            "test": {
+                "id": "7",
+                "lease_token": "a" * 48,
+                "report_version": 1,
+                "metadata": {
+                    "patient_id": "SYNTHETIC-001",
+                    "patient_name": "SYNTHETIC TEST",
+                    "accession_number": "SYNTHETIC-ACC",
+                    "modality": "OT",
+                    "site_id": "SYNTHETIC-SITE",
+                },
+            }
+        }
+
+    async def manual_test_document(self, test_id: str, lease_token: str):
+        assert test_id == "7"
+        assert lease_token == "a" * 48
+        return b"%PDF-1.4 " + b"x" * 128
+
+    async def manual_test_status(self, test_id: str, lease_token: str, result: str):
+        self.statuses.append((test_id, lease_token, result))
+        return {"ok": True}
+
+
+class EmptyManualTestClient(ManualTestClient):
+    async def manual_test_claim(self):
+        return {"test": None}
+
+
 @pytest.mark.asyncio
 async def test_processing_success_moves_xml_to_completed(settings, database, monkeypatch):
     instance = worker(settings, database)
@@ -194,6 +231,48 @@ async def test_connection_accepts_authenticated_disabled_destination_without_que
 def test_legacy_status_path_is_mapped_to_authenticated_endpoint(settings, database):
     settings.update("non_dicom", {"status_path": "/status"})
     assert worker(settings, database)._client().config.status_path == "/api/voxel-desktop/v1/status"
+
+
+@pytest.mark.asyncio
+async def test_manual_test_stages_one_philips_package_without_queue(settings, database, monkeypatch):
+    instance = worker(settings, database)
+    philips_input = instance.paths.root / "synthetic-philips-input"
+    settings.update("non_dicom", {"philips_input_path": str(philips_input)})
+    instance.reconfigure()
+    client = ManualTestClient()
+    monkeypatch.setattr(instance, "_client", lambda: client)
+
+    result = await instance.run_manual_test_once()
+
+    assert result["status"] == "STAGED"
+    assert client.statuses == [("7", "a" * 48, "package_submitted")]
+    assert len(list(philips_input.glob("*.pdf"))) == 1
+    assert len(list(philips_input.glob("*.xml"))) == 1
+    assert instance.manager.stats()["pending"] == 0
+    assert database.query_one("SELECT COUNT(*) AS c FROM non_dicom_submissions")["c"] == 0
+
+
+@pytest.mark.asyncio
+async def test_manual_test_without_prepared_item_keeps_queue_empty(settings, database, monkeypatch):
+    instance = worker(settings, database)
+    monkeypatch.setattr(instance, "_client", lambda: EmptyManualTestClient())
+
+    result = await instance.run_manual_test_once()
+
+    assert result["status"] == "NO_TEST"
+    assert instance.manager.stats()["pending"] == 0
+
+
+@pytest.mark.asyncio
+async def test_manual_test_refuses_execution_while_processor_is_running(settings, database, monkeypatch):
+    instance = worker(settings, database)
+    instance._running = True
+    monkeypatch.setattr(instance, "_client", lambda: ManualTestClient())
+
+    with pytest.raises(RuntimeError, match="Pare o processador"):
+        await instance.run_manual_test_once()
+
+    assert instance.manager.stats()["pending"] == 0
 
 
 class PendingCloudClient(AcceptedClient):

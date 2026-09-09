@@ -80,6 +80,7 @@ class NonDicomWorker:
                 pending_path=str(config.get("pending_path", "/non-dicom/pending")), document_path=str(config.get("document_path", "/non-dicom/documents/{id}")),
                 metadata_path=str(config.get("metadata_path", "/non-dicom/documents/{id}/metadata")), upload_path=str(config.get("upload_path", "/non-dicom/submissions")), acknowledge_path=str(config.get("acknowledge_path", "/non-dicom/acknowledge")),
                 status_update_path=str(config.get("status_update_path", "/non-dicom/status")), timeout_seconds=int(config.get("timeout_seconds", 15)),
+                manual_claim_path=str(config.get("manual_claim_path", "/api/voxel-desktop/v1/manual-tests/claim")), manual_document_path=str(config.get("manual_document_path", "/api/voxel-desktop/v1/manual-tests/{id}/document")), manual_status_path=str(config.get("manual_status_path", "/api/voxel-desktop/v1/manual-tests/{id}/status")),
                 tls_enabled=bool(config.get("tls_enabled", True)), site_id=str(config.get("site_id", "")), router_id=str(config.get("router_id") or self.settings.get("system", "router_id")),
             ),
             token,
@@ -207,6 +208,39 @@ class NonDicomWorker:
         except Exception:
             self._cloud_status = "DISCONNECTED"
             return {"status": "DISCONNECTED", "detail": "Endpoint configurado indisponível"}
+
+    async def run_manual_test_once(self) -> dict[str, str]:
+        """Busca e grava uma única entrega de teste no diretório Philips, sem varrer ou processar fila."""
+        if self._running:
+            raise RuntimeError("Pare o processador antes de executar um teste manual isolado")
+        client = self._client()
+        if not client.configured:
+            raise RuntimeError("VOXEL PACS não configurado")
+        try:
+            response = await client.manual_test_claim()
+            test = response.get("test") if isinstance(response, dict) else None
+            if not isinstance(test, dict):
+                return {"status": "NO_TEST", "detail": "Nenhum teste manual preparado no PACS"}
+            test_id, lease = str(test.get("id") or ""), str(test.get("lease_token") or "")
+            metadata = dict(test.get("metadata") or {}) if isinstance(test.get("metadata"), dict) else {}
+            if not test_id.isdigit() or len(lease) < 32 or not metadata:
+                raise RuntimeError("Teste manual retornado pelo PACS é inválido")
+            content = await client.manual_test_document(test_id, lease)
+            if len(content) < 100 or not content.startswith(b"%PDF"):
+                raise RuntimeError("PDF do teste manual é inválido")
+            delivery = PhilipsPullDelivery(self.database, self.configured, client)
+            input_dir = delivery._directory("philips_input_path")
+            pdf_name = safe_file_name(f"manual-test-{test_id}-v{int(test.get('report_version') or 0)}.pdf")
+            xml_name = safe_file_name(f"voxel-manual-test-{test_id}.xml")
+            delivery._atomic_write(input_dir / pdf_name, content)
+            delivery._atomic_write(input_dir / xml_name, delivery._submission_xml(metadata, pdf_name))
+            await client.manual_test_status(test_id, lease, "package_submitted")
+            self._record_system_event("INFO", "NON_DICOM_MANUAL_TEST_STAGED", "Teste manual foi preparado no diretório Philips")
+            return {"status": "STAGED", "detail": "Teste manual preparado no diretório Philips"}
+        except Exception as exc:
+            self._record_system_event("ERROR", "NON_DICOM_MANUAL_TEST_FAILED", "Teste manual Non-DICOM não foi concluído")
+            LOGGER.warning("non_dicom_manual_test_failed", reason="manual_test_failure")
+            raise RuntimeError("Teste manual não pôde ser preparado") from exc
 
     async def run(self) -> None:
         self._running = True
