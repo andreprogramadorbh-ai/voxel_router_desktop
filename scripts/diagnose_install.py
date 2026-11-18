@@ -18,11 +18,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.config.settings import Settings  # noqa: E402
+from app.monitoring.network import local_ipv4_addresses, network_profiles  # noqa: E402
 from app.orthanc.client import OrthancServiceController  # noqa: E402
 from app.security.secrets import SecretStoreError, WindowsSecretStore  # noqa: E402
 
 STARTUP_ATTEMPTS = 15
 STARTUP_DELAY_SECONDS = 1.0
+# Porta DICOM que o Orthanc usava até a Fase 4; hoje o servidor DICOM do Orthanc fica desligado.
+LEGACY_ORTHANC_DICOM_PORT = 4243
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+WARNING = "ATENÇÃO"
 
 
 @dataclass(frozen=True)
@@ -60,6 +65,29 @@ async def http_status(url: str, auth: tuple[str, str] | None = None) -> tuple[bo
         return False, type(exc).__name__
 
 
+async def http_code(url: str, auth: tuple[str, str] | None = None) -> int | None:
+    try:
+        async with httpx.AsyncClient(timeout=5, auth=auth) as client:
+            return (await client.get(url)).status_code
+    except httpx.HTTPError:
+        return None
+
+
+def network_profile_checks() -> list[DiagnosticCheck]:
+    """A regra de entrada da 4242 só vale em Domínio/Privada: rede Pública bloqueia as modalidades."""
+    if platform.system() != "Windows":
+        return []
+    try:
+        profiles = network_profiles()
+    except Exception as exc:  # noqa: BLE001 - diagnóstico nunca derruba a instalação por isso
+        return [DiagnosticCheck("Perfil de rede", WARNING, f"Não foi possível ler o perfil de rede ({type(exc).__name__})", required=False)]
+    public = sorted(alias for alias, category in profiles.items() if category == "Public")
+    if public:
+        detail = f"Rede Pública em: {', '.join(public)}. A regra de firewall da porta DICOM vale só em Domínio/Privada; altere o perfil da rede da clínica para Privada."
+        return [DiagnosticCheck("Perfil de rede", WARNING, detail, required=False)]
+    return [DiagnosticCheck("Perfil de rede", "OK", ", ".join(f"{alias}: {category}" for alias, category in sorted(profiles.items())) or "Sem adaptador físico conectado", required=False)]
+
+
 async def wait_for_http(url: str, auth: tuple[str, str] | None = None) -> tuple[bool, str]:
     latest_detail = "NoAttempt"
     for attempt in range(STARTUP_ATTEMPTS):
@@ -94,7 +122,6 @@ async def diagnose(settings: Settings | None = None, component: str = "final") -
     paths = current.paths
     router_port = int(current.get("api", "port", default=8765))
     router_dicom_port = int(current.get("dicom", "port", default=4242))
-    orthanc_dicom_port = int(current.get("orthanc", "dicom_port", default=4243))
     orthanc_http_port = int(current.get("orthanc", "http_port", default=8042))
     orthanc_url = str(current.get("orthanc", "url", default=f"http://127.0.0.1:{orthanc_http_port}")).rstrip("/")
     router_url = f"http://{current.get('api', 'host', default='127.0.0.1')}:{router_port}"
@@ -114,21 +141,30 @@ async def diagnose(settings: Settings | None = None, component: str = "final") -
         service = service_check("Serviço VOXEL Orthanc", "VOXELOrthanc")
         if service is not None:
             checks.append(service)
-        orthanc_dicom_open, orthanc_rest_open = await asyncio.gather(
-            wait_for_tcp("127.0.0.1", orthanc_dicom_port),
-            wait_for_tcp("127.0.0.1", orthanc_http_port),
-        )
+        orthanc_rest_open = await wait_for_tcp("127.0.0.1", orthanc_http_port)
+        # REST só em loopback: o Router nunca deve falar com um Orthanc fora desta máquina.
+        orthanc_host = httpx.URL(orthanc_url).host
+        exposed = [ip for ip in local_ipv4_addresses() if tcp_open(ip, orthanc_http_port, timeout=1.0)]
+        legacy_dicom_open = tcp_open("127.0.0.1", LEGACY_ORTHANC_DICOM_PORT, timeout=1.0)
         checks.extend(
             [
-                DiagnosticCheck(
-                    f"Porta Orthanc DICOM {orthanc_dicom_port}",
-                    "OK" if orthanc_dicom_open else "FALHA",
-                    f"TCP {orthanc_dicom_port}",
-                ),
                 DiagnosticCheck(
                     f"Porta Orthanc REST {orthanc_http_port}",
                     "OK" if orthanc_rest_open else "FALHA",
                     f"TCP {orthanc_http_port} localhost",
+                ),
+                DiagnosticCheck("URL do Orthanc em loopback", "OK" if orthanc_host in LOOPBACK_HOSTS else "FALHA", orthanc_host),
+                DiagnosticCheck(
+                    "Orthanc REST fora da LAN",
+                    "OK" if not exposed else WARNING,
+                    "Porta REST não responde nos IPs da LAN" if not exposed else f"Porta {orthanc_http_port} aberta em {', '.join(exposed)}; acesso remoto segue recusado (RemoteAccessAllowed=false). Verifique se o Orthanc suporta HttpBindAddresses.",
+                    required=False,
+                ),
+                DiagnosticCheck(
+                    f"Orthanc DICOM desligado (porta {LEGACY_ORTHANC_DICOM_PORT})",
+                    "OK" if not legacy_dicom_open else WARNING,
+                    "Porta fechada" if not legacy_dicom_open else f"Algo escuta em {LEGACY_ORTHANC_DICOM_PORT}; o Orthanc do VOXEL não deveria (DicomServerEnabled=false).",
+                    required=False,
                 ),
             ]
         )
@@ -141,6 +177,8 @@ async def diagnose(settings: Settings | None = None, component: str = "final") -
             pass
         orthanc_ok, orthanc_detail = await wait_for_http(f"{orthanc_url}/system", orthanc_auth)
         checks.append(DiagnosticCheck("Health check Orthanc", "OK" if orthanc_ok else "FALHA", orthanc_detail))
+        anonymous = await http_code(f"{orthanc_url}/system")
+        checks.append(DiagnosticCheck("Orthanc exige autenticação", "OK" if anonymous == 401 else "FALHA", f"HTTP {anonymous} sem credenciais"))
 
     if component in {"router", "final"}:
         checks.append(installed_binary("Router instalado", "VOXELRouter.exe"))
@@ -167,6 +205,7 @@ async def diagnose(settings: Settings | None = None, component: str = "final") -
         )
         router_ok, router_detail = await wait_for_http(f"{router_url}/health")
         checks.append(DiagnosticCheck("Health check Router", "OK" if router_ok else "FALHA", router_detail))
+        checks.extend(network_profile_checks())
     return checks
 
 

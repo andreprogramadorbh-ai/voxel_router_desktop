@@ -7,7 +7,7 @@ O artefato único `VOXEL_ROUTER_SETUP.exe` instala, configura e valida dois comp
 | Componente | Processo instalado | Serviço Windows | Interfaces |
 |---|---|---|---|
 | VOXEL Router | `VOXELRouter.exe` e `VOXELRouterService.exe` | `VOXELRouter` / **VOXEL Router** | DICOM SCP `4242/TCP`; administração `127.0.0.1:8765` |
-| Orthanc | `orthanc\Orthanc.exe` e `VOXELOrthancService.exe` | `VOXELOrthanc` / **VOXEL Orthanc** | DICOM `4243/TCP`; REST `127.0.0.1:8042` |
+| Orthanc | `orthanc\Orthanc.exe` e `VOXELOrthancService.exe` | `VOXELOrthanc` / **VOXEL Orthanc** | Sem DICOM; REST `127.0.0.1:8042` com autenticação |
 
 ## Fluxo idempotente
 
@@ -31,7 +31,7 @@ Caso a validação crítica falhe, o instalador registra uma mensagem diagnósti
 
 ## Checks finais
 
-A conclusão somente é exibida após confirmar presença dos binários, serviços em execução, diretórios persistentes, listeners `4242`, `4243`, `8042` e `8765`, `/health` do Router e `/system` do Orthanc. O check Orthanc consulta a REST API real autenticada; não há estado mock no endpoint de saúde.
+A conclusão somente é exibida após confirmar presença dos binários, serviços em execução, diretórios persistentes, listeners `4242`, `8042` e `8765`, `/health` do Router e `/system` do Orthanc. Também confere que o Orthanc recusa acesso sem credenciais, que a REST não responde nos IPs da LAN, que nada escuta na antiga `4243` e se a rede está como Pública (avisos não bloqueantes). O check Orthanc consulta a REST API real autenticada; não há estado mock no endpoint de saúde.
 
 ## Segurança e limites
 

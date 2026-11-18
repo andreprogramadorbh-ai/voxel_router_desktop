@@ -24,24 +24,23 @@ class RunningScp:
     port = 4242
 
 
-class ConnectedCloud:
-    async def health_check(self) -> str:
-        return "CONNECTED"
-
-
 async def no_network() -> dict[str, str]:
     return {"local_network": "OK", "dns": "OK", "internet": "OK"}
 
 
-def test_orthanc_configuration_uses_independent_ports_and_persistent_paths(settings, monkeypatch):
+def test_orthanc_configuration_disables_dicom_and_keeps_rest_on_loopback(settings, monkeypatch):
     monkeypatch.setenv("VOXEL_ROUTER_DEV_SECRET_KEY", create_development_key())
     target = configure_orthanc(settings)
     payload = json.loads(target.read_text(encoding="utf-8"))
 
-    assert payload["DicomAet"] == "VOXEL_ORTHANC"
-    assert payload["DicomPort"] == 4243
+    # Nada no Router usa o DICOM do Orthanc (gravação e consulta são via REST): sem listener 4243.
+    assert payload["DicomServerEnabled"] is False
+    assert "DicomPort" not in payload
+    assert payload["HttpServerEnabled"] is True
     assert payload["HttpPort"] == 8042
+    assert payload["HttpBindAddresses"] == ["127.0.0.1"]
     assert payload["RemoteAccessAllowed"] is False
+    assert payload["AuthenticationEnabled"] is True
     assert Path(payload["StorageDirectory"]) == settings.paths.orthanc_storage
     assert Path(payload["IndexDirectory"]) == settings.paths.orthanc_database
     assert settings.paths.orthanc_storage.is_dir()
@@ -50,14 +49,15 @@ def test_orthanc_configuration_uses_independent_ports_and_persistent_paths(setti
 
 @pytest.mark.asyncio
 async def test_dashboard_health_reports_external_orthanc_and_separate_ports(settings, monkeypatch):
-    monitor = HealthMonitor(settings, OnlineOrthanc(), RunningScp(), ConnectedCloud())
+    monitor = HealthMonitor(settings, OnlineOrthanc(), RunningScp())
     monkeypatch.setattr(monitor, "network", no_network)
 
     result = await monitor.snapshot()
 
     assert result["router"]["status"] == "ONLINE"
-    assert result["orthanc"] == {"status": "ONLINE", "detail": "1.13.0", "dicom_port": 4243, "http_port": 8042}
-    assert result["cloud"]["status"] == "CONNECTED"
+    assert result["orthanc"] == {"status": "ONLINE", "detail": "1.13.0", "http_port": 8042}
+    # Sem fila/destinos não há fato que justifique "conectado".
+    assert result["cloud"]["status"] == "DISCONNECTED"
     assert result["dicom"] == {"status": "ONLINE", "ae_title": "VOXEL_ROUTER", "port": 4242}
 
 
@@ -123,3 +123,51 @@ def test_api_health_reports_orthanc_offline_when_real_rest_is_unavailable(settin
 
     assert response.status_code == 200
     assert response.json()["orthanc"]["status"] == "OFFLINE"
+
+
+def test_orthanc_password_is_random_per_installation_and_reused_on_upgrade(tmp_path, monkeypatch):
+    from app.config.settings import AppPaths, Settings
+
+    monkeypatch.setenv("VOXEL_ROUTER_DEV_SECRET_KEY", create_development_key())
+
+    def install(name: str) -> dict:
+        monkeypatch.setenv("VOXEL_ROUTER_DATA_DIR", str(tmp_path / name))
+        current = Settings(AppPaths.from_environment())
+        return json.loads(configure_orthanc(current).read_text(encoding="utf-8"))["RegisteredUsers"]
+
+    first = install("clinica-a")
+    # Atualização: o instalador regenera orthanc.json e a senha do cofre é reaproveitada.
+    assert install("clinica-a") == first
+    second = install("clinica-b")
+    assert list(first) == list(second) == ["voxel-router-internal"]
+    assert first != second
+    assert len(first["voxel-router-internal"]) >= 32
+    versioned = (PROJECT_ROOT / "config" / "default.json").read_text(encoding="utf-8")
+    assert first["voxel-router-internal"] not in versioned
+    assert "RegisteredUsers" not in versioned
+
+
+def test_nothing_in_router_code_uses_orthanc_dicom_port():
+    """Prova estática: o Router só fala com o Orthanc por REST; a antiga porta 4243 não é usada."""
+    sources = [path for folder in ("app", "frontend") for path in (PROJECT_ROOT / folder).rglob("*") if path.suffix in {".py", ".js", ".html", ".json"}]
+    offenders = [str(path) for path in sources if "4243" in path.read_text(encoding="utf-8") or "dicom_port" in path.read_text(encoding="utf-8")]
+    assert offenders == []
+    defaults = json.loads((PROJECT_ROOT / "config" / "default.json").read_text(encoding="utf-8"))
+    assert "dicom_port" not in defaults["orthanc"]
+
+
+def test_installer_firewall_opens_only_4242_on_domain_private_and_removes_4243():
+    installer = (PROJECT_ROOT / "installer" / "VOXEL_ROUTER_SETUP.iss").read_text(encoding="utf-8")
+    add_rules = [line for line in installer.splitlines() if "firewall add rule" in line]
+
+    assert len(add_rules) == 1
+    assert "localport=4242" in add_rules[0] and "profile=domain,private" in add_rules[0]
+    assert "profile=public" not in installer.lower() and "profile=any" not in installer.lower()
+    assert "localport=4243" not in installer
+    # Regra legada removida na instalação/atualização e na desinstalação; netsh por caminho absoluto.
+    assert installer.count('delete rule name=\\"VOXEL Orthanc DICOM\\"') == 2
+    assert "'netsh.exe'" not in installer and '"netsh.exe"' not in installer
+    # orthanc.json é regenerado também em atualizações e o Orthanc reiniciado para aplicá-lo.
+    assert "config\\orthanc.json')) then begin" not in installer
+    assert "'--configure', 'Configurar Orthanc'" in installer
+    assert "'restart', 'Reiniciar VOXEL Orthanc'" in installer

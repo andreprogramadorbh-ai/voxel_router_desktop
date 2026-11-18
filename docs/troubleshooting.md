@@ -14,7 +14,7 @@ Este guia orienta diagnóstico operacional sem apagar estudos, expor credenciais
 
 ## DICOM SCP sem associação
 
-Confirme se a modalidade usa o AE Title local correto, padrão `VOXEL_ROUTER`, e porta TCP configurada, padrão `4242`. Valide `C-ECHO` antes de C-STORE. Revise a regra de firewall `VOXEL Router DICOM SCP` e assegure que ela se aplica somente ao perfil privado aprovado. Não abra a porta da API de administração, que deve permanecer em loopback.
+Confirme se a modalidade usa o AE Title local correto, padrão `VOXEL_ROUTER`, e porta TCP configurada, padrão `4242`. Valide `C-ECHO` antes de C-STORE. Revise a regra de firewall `VOXEL Router DICOM SCP` e assegure que ela se aplica só aos perfis Domínio e Privada. Se a rede da clínica estiver como Pública, a regra não vale: altere o perfil da rede (o diagnóstico de instalação avisa). Não abra a porta da API de administração, que deve permanecer em loopback.
 
 Se a associação chega, mas C-STORE falha, revise o código de retorno DICOM e os logs das categorias `DICOM` e `ORTHANC`. UIDs inválidos, arquivo corrompido ou Orthanc indisponível devem impedir a confirmação indevida. Preserve o objeto original e não altere sua codificação manualmente.
 

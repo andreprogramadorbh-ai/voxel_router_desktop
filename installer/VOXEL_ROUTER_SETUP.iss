@@ -73,8 +73,9 @@ Filename: "sc.exe"; Parameters: "stop {#RouterServiceName}"; Flags: runhidden wa
 Filename: "sc.exe"; Parameters: "stop {#OrthancServiceName}"; Flags: runhidden waituntilterminated
 Filename: "{app}\{#RouterServiceExeName}"; Parameters: "remove"; Flags: runhidden waituntilterminated; Check: FileExists(ExpandConstant('{app}\{#RouterServiceExeName}'))
 Filename: "{app}\{#OrthancServiceExeName}"; Parameters: "remove"; Flags: runhidden waituntilterminated; Check: FileExists(ExpandConstant('{app}\{#OrthancServiceExeName}'))
-Filename: "netsh.exe"; Parameters: "advfirewall firewall delete rule name=\"VOXEL Router DICOM SCP\""; Flags: runhidden waituntilterminated
-Filename: "netsh.exe"; Parameters: "advfirewall firewall delete rule name=\"VOXEL Orthanc DICOM\""; Flags: runhidden waituntilterminated
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=\"VOXEL Router DICOM SCP\""; Flags: runhidden waituntilterminated
+; Regra legada da 4243 (instalações anteriores à Fase 4).
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=\"VOXEL Orthanc DICOM\""; Flags: runhidden waituntilterminated
 
 [Code]
 var
@@ -137,7 +138,7 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   OrthancInstallationWasValid := OrthancInstallationIsValid();
   if OrthancInstallationWasValid then
-    Log('Orthanc válido detectado: binário, configuração e serviço em execução serão preservados.');
+    Log('Orthanc válido detectado: binário, storage e senha interna serão preservados; orthanc.json é regenerado.');
   Result := '';
 end;
 
@@ -216,12 +217,11 @@ begin
       exit;
     end;
 
-    { Preserva orthanc.json existente em updates; cria somente na primeira instalação. }
-    if not FileExists(ExpandConstant('{commonappdata}\VOXEL\Router\config\orthanc.json')) then begin
-      if not RunCritical(ExpandConstant('{app}\{#OrthancServiceExeName}'), '--configure', 'Configurar Orthanc') then begin
-        SetInstallationIncomplete();
-        exit;
-      end;
+    { Regenera orthanc.json também em atualizações: aplica DicomServerEnabled=false e REST só em
+      loopback. A senha interna vem do cofre DPAPI e é reaproveitada; storage e índice não mudam. }
+    if not RunCritical(ExpandConstant('{app}\{#OrthancServiceExeName}'), '--configure', 'Configurar Orthanc') then begin
+      SetInstallationIncomplete();
+      exit;
     end;
 
     if not ServiceExists('{#OrthancServiceName}') then begin
@@ -234,7 +234,13 @@ begin
       SetInstallationIncomplete();
       exit;
     end;
-    if not ServiceRunning('{#OrthancServiceName}') then begin
+    if ServiceRunning('{#OrthancServiceName}') then begin
+      { Orthanc preservado em execução: reinicia para carregar o orthanc.json regenerado. }
+      if not RunCritical(ExpandConstant('{app}\{#OrthancServiceExeName}'), 'restart', 'Reiniciar VOXEL Orthanc') then begin
+        SetInstallationIncomplete();
+        exit;
+      end;
+    end else begin
       if not RunCritical('sc.exe', 'start {#OrthancServiceName}', 'Iniciar VOXEL Orthanc') then begin
         SetInstallationIncomplete();
         exit;
@@ -264,8 +270,15 @@ begin
       exit;
     end;
 
-    ExecuteAndCheck('netsh.exe', 'advfirewall firewall add rule name=\"VOXEL Router DICOM SCP\" dir=in action=allow protocol=TCP localport=4242 profile=private', 'Configurar firewall Router');
-    ExecuteAndCheck('netsh.exe', 'advfirewall firewall add rule name=\"VOXEL Orthanc DICOM\" dir=in action=allow protocol=TCP localport=4243 profile=private', 'Configurar firewall Orthanc');
+    { Firewall: só 4242/TCP de entrada, perfis Domínio e Privada (nunca Pública). A regra antiga da
+      4243 (Orthanc DICOM, hoje desligado) é removida, inclusive em atualizações. Remover antes de
+      criar evita regra duplicada ou com perfil antigo. A falha da exclusão (regra inexistente) só é registrada. }
+    ExecuteAndCheck(ExpandConstant('{sys}\netsh.exe'), 'advfirewall firewall delete rule name=\"VOXEL Orthanc DICOM\"', 'Remover regra legada Orthanc 4243');
+    ExecuteAndCheck(ExpandConstant('{sys}\netsh.exe'), 'advfirewall firewall delete rule name=\"VOXEL Router DICOM SCP\"', 'Remover regra anterior Router 4242');
+    if not RunCritical(ExpandConstant('{sys}\netsh.exe'), 'advfirewall firewall add rule name=\"VOXEL Router DICOM SCP\" dir=in action=allow protocol=TCP localport=4242 profile=domain,private', 'Configurar firewall Router 4242 (Domínio/Privada)') then begin
+      SetInstallationIncomplete();
+      exit;
+    end;
 
     if not RunCritical(ExpandConstant('{app}\{#DiagnosticsExeName}'), '', 'Diagnóstico final Router e Orthanc') then begin
       SetInstallationIncomplete();

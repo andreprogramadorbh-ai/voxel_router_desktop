@@ -15,6 +15,8 @@
   },
   "dicom": {
     "ae_title": "VOXEL_ROUTER",
+    "bind_host": "0.0.0.0",
+    "outbound_ae_title": "",
     "port": 4242,
     "association_timeout_seconds": 15,
     "network_timeout_seconds": 30,
@@ -26,8 +28,6 @@
     "url": "http://127.0.0.1:8042",
     "service_name": "VOXELOrthanc",
     "service_display_name": "VOXEL Orthanc",
-    "ae_title": "VOXEL_ORTHANC",
-    "dicom_port": 4243,
     "http_port": 8042,
     "timeout_seconds": 10,
     "enabled": true
@@ -35,7 +35,7 @@
   "queue": {
     "max_concurrent_transfers": 2,
     "retry_delays_seconds": [30, 120, 300, 900],
-    "max_attempts": 4
+    "pending_alert_minutes": 60
   },
   "storage": {
     "retention_hours": 168,

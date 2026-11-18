@@ -8,7 +8,7 @@ Este guia é destinado ao time de TI da VOXEL. A implantação requer estação 
 |---|---|
 | Sistema operacional | Windows x64 suportado pela política VOXEL e atualizado. |
 | Disco | Capacidade reservada para retenção local, Orthanc e margem para indisponibilidade de conectividade. |
-| Rede DICOM | Modalidades alcançam o Router em `4242/TCP`; o Orthanc utiliza `4243/TCP` somente quando aprovado no cenário local. |
+| Rede DICOM | Modalidades alcançam o Router em `4242/TCP`. A regra de firewall vale nos perfis Domínio e Privada; com a rede da clínica marcada como Pública, as modalidades não conseguem enviar (o diagnóstico avisa). O Orthanc não escuta DICOM. |
 | Rede cloud | O Router alcança exclusivamente os endpoints/destinos aprovados; TLS e certificados são homologados quando aplicável. |
 | Orthanc | Binário e plugins homologados estão incluídos no instalador; não é necessária instalação manual. |
 | Segurança | Senha de bootstrap é fornecida por canal autorizado; nunca por ticket, script versionado ou log. |
@@ -55,7 +55,7 @@ Após a saúde do Router ser aprovada, abra [http://127.0.0.1:8765](http://127.0
 | Orthanc | `VOXELOrthanc` / **VOXEL Orthanc** | `sc query VOXELOrthanc` |
 | API administrativa | `127.0.0.1:8765` | `http://127.0.0.1:8765/health` |
 | SCP DICOM Router | `0.0.0.0:4242` padrão | C-ECHO a partir de nó autorizado. |
-| DICOM Orthanc | `4243/TCP` | Listener local do serviço Orthanc. |
+| DICOM Orthanc | — | Desligado. Instalações anteriores tinham `4243/TCP`; a regra de firewall é removida na atualização. |
 | REST Orthanc | `127.0.0.1:8042` | `http://127.0.0.1:8042/system`, autenticado internamente. |
 | Configuração | `ProgramData\VOXEL\Router\config` | `router.json` e `orthanc.json` preservados em update. |
 | Storage Orthanc | `ProgramData\VOXEL\Router\orthanc\storage` | Nunca excluir em atualização ou desinstalação normal. |

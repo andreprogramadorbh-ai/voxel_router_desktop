@@ -11,7 +11,10 @@ from app.security.secrets import WindowsSecretStore
 
 
 def configure_orthanc(settings: Settings | None = None) -> Path:
-    """Criar ou atualizar orthanc.json com ports e storage próprios do Orthanc."""
+    """Criar ou atualizar orthanc.json (REST em loopback com autenticação, sem servidor DICOM).
+
+    Idempotente: reaproveita a senha do cofre, por isso o instalador o executa também em atualizações.
+    """
     current = settings or Settings()
     secret_store = WindowsSecretStore(current.paths)
     username = "voxel-router-internal"
@@ -23,22 +26,19 @@ def configure_orthanc(settings: Settings | None = None) -> Path:
         "Name": "VOXEL Orthanc",
         "StorageDirectory": str(current.paths.orthanc_storage),
         "IndexDirectory": str(current.paths.orthanc_database),
-        "DicomAet": str(current.get("orthanc", "ae_title", default="VOXEL_ORTHANC")),
-        "DicomPort": int(current.get("orthanc", "dicom_port", default=4243)),
+        # O Router grava e consulta só pela REST; nada usa o listener DICOM do Orthanc.
+        "DicomServerEnabled": False,
+        "HttpServerEnabled": True,
         "HttpPort": int(current.get("orthanc", "http_port", default=8042)),
-        "HttpListenEnabled": True,
+        # REST só em loopback: bind explícito e, como segunda barreira, recusa de clientes remotos.
+        "HttpBindAddresses": ["127.0.0.1"],
         "RemoteAccessAllowed": False,
+        # Usuário interno com senha aleatória por instalação, guardada no cofre DPAPI; nunca fixa.
         "AuthenticationEnabled": True,
         "RegisteredUsers": {username: password},
-        "DicomCheckCalledAet": True,
-        "DicomAlwaysAllowEcho": True,
-        "DicomAlwaysAllowStore": False,
-        "StrictAetComparison": True,
         "LimitFindResults": 100,
         "LimitFindInstances": 1000,
         "MaximumStorageSize": 0,
-        "DicomTlsEnabled": bool(current.get("dicom", "tls_enabled", default=False)),
-        "LogLevel": "warning",
     }
     target = current.paths.config / "orthanc.json"
     temporary = target.with_suffix(".tmp")

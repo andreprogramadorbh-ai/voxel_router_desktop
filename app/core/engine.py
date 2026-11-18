@@ -45,11 +45,16 @@ class RouterEngine:
             int(self.settings.get("dicom", "port", default=4242)),
             int(self.settings.get("dicom", "max_associations", default=8)),
             self.orthanc.store_instance_sync if bool(self.settings.get("orthanc", "enabled", default=True)) else None,
+            bind_host=str(self.settings.get("dicom", "bind_host", default="0.0.0.0")),
         )
-        self.queue = QueueManager(self.database, list(self.settings.get("queue", "retry_delays_seconds", default=[30, 120, 300, 900])), int(self.settings.get("queue", "max_attempts", default=4)))
+        self.queue = QueueManager(
+            self.database,
+            list(self.settings.get("queue", "retry_delays_seconds", default=[30, 120, 300, 900])),
+            int(self.settings.get("queue", "pending_alert_minutes", default=60)),
+        )
         self.transfer = TransferManager(self.database, self.settings, self.queue)
         self.non_dicom = NonDicomWorker(self.settings, self.database)
-        self.health = HealthMonitor(self.settings, self.orthanc, self.scp, non_dicom=self.non_dicom)
+        self.health = HealthMonitor(self.settings, self.orthanc, self.scp, non_dicom=self.non_dicom, queue=self.queue)
         self._stop = asyncio.Event()
         self._tasks: list[asyncio.Task[Any]] = []
 
@@ -65,10 +70,14 @@ class RouterEngine:
         LOGGER.info("router_engine_initialized", router_id=self.settings.get("system", "router_id"), recovered_items=recovered, non_dicom_recovered=non_dicom_recovered, ready_studies=ready, enqueued_items=enqueued)
         return {"recovered": recovered, "non_dicom_recovered": non_dicom_recovered, "ready": ready, "enqueued": enqueued}
 
-    async def run(self) -> None:
-        self.initialize()
+    def start_background_tasks(self) -> None:
+        """Inicia envio, Non-DICOM, reconciliação da fila e retenção no loop asyncio atual."""
         self._stop.clear()
         self._tasks = [asyncio.create_task(self.transfer.run()), asyncio.create_task(self.non_dicom.run()), asyncio.create_task(self._reconcile_loop()), asyncio.create_task(self._retention_loop())]
+
+    async def run(self) -> None:
+        self.initialize()
+        self.start_background_tasks()
         try:
             await self._stop.wait()
         finally:

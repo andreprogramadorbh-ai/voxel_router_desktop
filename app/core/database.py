@@ -8,7 +8,7 @@ from typing import Any, Iterator
 
 from app.config.settings import AppPaths
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -261,8 +261,50 @@ CREATE INDEX IF NOT EXISTS idx_philips_pull_deliveries_status ON philips_pull_de
 
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (1);
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (2);
+-- v4: tentativas de associação desconhecidas, registradas só no modo aprendizado.
+CREATE TABLE IF NOT EXISTS dicom_access_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    calling_ae TEXT NOT NULL,
+    called_ae TEXT NOT NULL,
+    source_ip TEXT NOT NULL,
+    reason TEXT NOT NULL CHECK(reason IN ('UNKNOWN_NODE','CALLED_AE','ECHO_ONLY')),
+    attempt_count INTEGER NOT NULL DEFAULT 1,
+    first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(calling_ae, called_ae, source_ip, reason)
+);
+
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (3);
+INSERT OR IGNORE INTO schema_migrations(version) VALUES (4);
 """
+
+# v5: resultado do último C-ECHO por destino. `echo_target` guarda a identidade testada
+# (Calling AE|Called AE|host|porta|TLS); qualquer mudança exige novo C-ECHO antes de habilitar.
+DESTINATION_ECHO_COLUMNS = {
+    "echo_status": "TEXT CHECK(echo_status IS NULL OR echo_status IN ('SUCCESS', 'FAILED'))",
+    "echo_at": "TEXT",
+    "echo_error": "TEXT",
+    "echo_target": "TEXT",
+}
+
+
+def _migrate_destination_echo(connection: sqlite3.Connection) -> None:
+    """Migration idempotente v5 (ALTER TABLE não aceita IF NOT EXISTS no SQLite)."""
+    existing = {row[1] for row in connection.execute("PRAGMA table_info(destinations)")}
+    missing = [name for name in DESTINATION_ECHO_COLUMNS if name not in existing]
+    if not missing:
+        return
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        for name in missing:
+            connection.execute(f"ALTER TABLE destinations ADD COLUMN {name} {DESTINATION_ECHO_COLUMNS[name]}")
+        # Destinos anteriores nunca passaram por C-ECHO registrado: ficam pausados até o teste.
+        connection.execute("UPDATE destinations SET enabled = 0")
+        connection.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (5)")
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
 
 
 class Database:
@@ -283,6 +325,7 @@ class Database:
     def initialize(self) -> None:
         with self.connect() as connection:
             connection.executescript(SCHEMA)
+            _migrate_destination_echo(connection)
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:

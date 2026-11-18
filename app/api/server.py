@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import platform
+import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path, PureWindowsPath
 from typing import Any
@@ -15,8 +16,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
 from app.auth.service import AccountLockedError, AuthenticationError, AuthenticationService
+from app.cloud.connectors import CloudConnectorError, echo_target, echo_verified, outbound_ae_title
 from app.core.engine import RouterEngine
 from app.core.logging import get_logger
+from app.dicom.access import LEARNING_MAX_HOURS, normalize_ae_title, normalize_host_network
+from app.monitoring.network import local_ipv4_addresses
+from app.queue.manager import QueueStateError
 from app.security.secrets import SecretStoreError, WindowsSecretStore
 
 LOGGER = get_logger(__name__)
@@ -54,24 +59,52 @@ class NodePayload(BaseModel):
     location: str | None = Field(default=None, max_length=128)
     enabled: bool = True
 
+    @field_validator("ae_title")
+    @classmethod
+    def validate_ae_title(cls, value: str) -> str:
+        return normalize_ae_title(value)
+
+    @field_validator("host")
+    @classmethod
+    def validate_host(cls, value: str) -> str:
+        # O SCP só conhece o IP de origem: o cadastro precisa ser IP ou faixa CIDR.
+        return normalize_host_network(value)
+
+
+class LearningModePayload(BaseModel):
+    hours: int = Field(ge=1, le=LEARNING_MAX_HOURS)
+
+
+class RegisterAttemptPayload(BaseModel):
+    name: str = Field(min_length=2, max_length=128)
+    modality: str | None = Field(default=None, max_length=16)
+    location: str | None = Field(default=None, max_length=128)
+    port: int = Field(default=104, ge=1, le=65535)
+
 
 class DestinationPayload(BaseModel):
     name: str = Field(min_length=2, max_length=128)
-    kind: str = Field(pattern="^(DICOM|DICOMWEB|CLOUD)$")
-    ae_title: str | None = Field(default=None, max_length=16)
-    host: str | None = Field(default=None, max_length=255)
-    port: int | None = Field(default=None, ge=1, le=65535)
-    endpoint: str | None = Field(default=None, max_length=2048)
+    # Só DICOM: não há envio DICOMweb/CLOUD implementado. Registros antigos desses tipos só são listados.
+    kind: str = Field(default="DICOM", pattern="^DICOM$")
+    ae_title: str = Field(min_length=1, max_length=16)
+    host: str = Field(min_length=1, max_length=255)
+    port: int = Field(ge=1, le=65535)
     tls_enabled: bool = False
     priority: int = Field(default=3, ge=1, le=4)
-    enabled: bool = True
+    # Sem `enabled`: destino nasce PAUSED e só é habilitado por /enable após C-ECHO com sucesso.
 
-    @field_validator("endpoint")
+    @field_validator("ae_title")
     @classmethod
-    def validate_endpoint(cls, value: str | None) -> str | None:
-        if value and not value.startswith(("https://", "http://")):
-            raise ValueError("Endpoint deve usar HTTP ou HTTPS")
-        return value
+    def validate_ae_title(cls, value: str) -> str:
+        return normalize_ae_title(value)
+
+    @field_validator("host")
+    @classmethod
+    def validate_host(cls, value: str) -> str:
+        text = value.strip()
+        if not text or any(char.isspace() or char in "/@\\" for char in text):
+            raise ValueError("Host inválido")
+        return text
 
 
 class QueuePriorityPayload(BaseModel):
@@ -98,6 +131,8 @@ def create_app(engine: RouterEngine | None = None, start_engine: bool = False) -
         database.initialize()
         if start_engine:
             current_engine.initialize()
+            # Sem isso a API sobe, o SCP recebe, mas nada é reconciliado nem enviado.
+            current_engine.start_background_tasks()
         yield
         if start_engine:
             await current_engine.stop()
@@ -152,8 +187,8 @@ def create_app(engine: RouterEngine | None = None, start_engine: bool = False) -
 
     @app.get("/health/cloud")
     @app.get("/api/health/cloud")
-    async def health_cloud() -> dict[str, str]:
-        return {"status": "DISCONNECTED"}
+    async def health_cloud() -> dict[str, Any]:
+        return current_engine.health.cloud()
 
     @app.get("/health/dicom")
     @app.get("/api/health/dicom")
@@ -228,15 +263,30 @@ def create_app(engine: RouterEngine | None = None, start_engine: bool = False) -
     async def patch_settings(section: str, payload: SettingsPatch, request: Request, user: dict[str, Any] = Depends(configured_user)) -> dict[str, Any]:
         allowed = {
             "system": {"equipment_name", "timezone", "language"},
-            "dicom": {"ae_title", "port", "association_timeout_seconds", "network_timeout_seconds", "max_associations", "study_quiet_window_seconds", "tls_enabled"},
-            "queue": {"max_concurrent_transfers", "retry_delays_seconds", "max_attempts"},
+            "dicom": {"ae_title", "outbound_ae_title", "port", "association_timeout_seconds", "network_timeout_seconds", "max_associations", "study_quiet_window_seconds", "tls_enabled"},
+            "queue": {"max_concurrent_transfers", "retry_delays_seconds", "pending_alert_minutes"},
             "storage": {"retention_hours", "auto_delete", "warning_percent", "critical_percent", "emergency_percent"},
         }
         if section not in allowed or not set(payload.values).issubset(allowed[section]):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Alteração de configuração não permitida")
+        values = dict(payload.values)
+        details = None
+        if section == "dicom":
+            for key in ("ae_title", "outbound_ae_title"):
+                if key in values:
+                    try:
+                        values[key] = normalize_ae_title(values[key])
+                    except ValueError as exc:
+                        raise HTTPException(422, f"{key}: {exc}") from exc
+            previous = outbound_ae_title(settings)
+            if "outbound_ae_title" in values and values["outbound_ae_title"] != previous:
+                # Novo Calling AE: o VOXEL precisa conhecê-lo. Pausa os destinos DICOM até novo C-ECHO.
+                with database.transaction() as connection:
+                    paused = connection.execute("UPDATE destinations SET enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE kind = 'DICOM' AND enabled = 1").rowcount
+                details = f"outbound_ae:{previous or '-'}->{values['outbound_ae_title']};destinos_pausados={paused}"
         try:
-            result = settings.update(section, payload.values)
-            auth.audit(int(user["id"]), "UPDATE_SETTINGS", "SETTINGS", section, client_ip(request), "SUCCESS")
+            result = settings.update(section, values)
+            auth.audit(int(user["id"]), "UPDATE_SETTINGS", "SETTINGS", section, client_ip(request), "SUCCESS", details)
             return result
         except (KeyError, ValueError) as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Configuração inválida") from exc
@@ -350,7 +400,8 @@ def create_app(engine: RouterEngine | None = None, start_engine: bool = False) -
 
     @app.get("/api/dicom")
     async def dicom_status(_: dict[str, Any] = Depends(configured_user)) -> dict[str, Any]:
-        return await health_dicom()
+        # IPs da LAN só para usuário autenticado: é o que o operador informa à modalidade.
+        return {**await health_dicom(), "bind_host": current_engine.scp.bind_host, "local_ipv4": local_ipv4_addresses()}
 
     @app.post("/api/dicom/start")
     async def dicom_start(request: Request, user: dict[str, Any] = Depends(configured_user)) -> dict[str, str]:
@@ -368,68 +419,204 @@ def create_app(engine: RouterEngine | None = None, start_engine: bool = False) -
     async def list_modalities(_: dict[str, Any] = Depends(configured_user)) -> list[dict[str, Any]]:
         return [dict(row) for row in database.query_all("SELECT * FROM dicom_nodes ORDER BY name")]
 
-    @app.post("/api/modalities", status_code=status.HTTP_201_CREATED)
-    async def create_modality(payload: NodePayload, request: Request, user: dict[str, Any] = Depends(configured_user)) -> dict[str, int]:
+    def node_audit(row: Any) -> str:
+        """Resumo do que controla o acesso (AE, IP/CIDR, habilitada) para a trilha de auditoria."""
+        return f"ae={row['ae_title']};host={row['host']};enabled={int(bool(row['enabled']))}"
+
+    def insert_node(fields: dict[str, Any]) -> int:
         try:
             with database.transaction() as connection:
-                cursor = connection.execute("INSERT INTO dicom_nodes(name, description, ae_title, host, port, modality, manufacturer, location, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", tuple(payload.model_dump().values()))
-                node_id = int(cursor.lastrowid)
-            auth.audit(int(user["id"]), "CREATE_MODALITY", "DICOM_NODE", str(node_id), client_ip(request), "SUCCESS")
-            return {"id": node_id}
-        except Exception as exc:
-            raise HTTPException(status.HTTP_409_CONFLICT, "Não foi possível salvar a modalidade") from exc
+                cursor = connection.execute(
+                    "INSERT INTO dicom_nodes(name, description, ae_title, host, port, modality, manufacturer, location, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (fields["name"], fields.get("description"), fields["ae_title"], fields["host"], fields["port"], fields.get("modality"), fields.get("manufacturer"), fields.get("location"), int(bool(fields.get("enabled", True)))),
+                )
+                return int(cursor.lastrowid)
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, "Já existe uma modalidade com esse nome") from exc
+
+    @app.post("/api/modalities", status_code=status.HTTP_201_CREATED)
+    async def create_modality(payload: NodePayload, request: Request, user: dict[str, Any] = Depends(configured_user)) -> dict[str, int]:
+        fields = payload.model_dump()
+        node_id = insert_node(fields)
+        auth.audit(int(user["id"]), "CREATE_MODALITY", "DICOM_NODE", str(node_id), client_ip(request), "SUCCESS", node_audit(fields))
+        return {"id": node_id}
 
     @app.put("/api/modalities/{node_id}", status_code=status.HTTP_204_NO_CONTENT)
     async def update_modality(node_id: int, payload: NodePayload, request: Request, user: dict[str, Any] = Depends(configured_user)) -> None:
         fields = payload.model_dump()
-        with database.transaction() as connection:
-            cursor = connection.execute("UPDATE dicom_nodes SET name=?, description=?, ae_title=?, host=?, port=?, modality=?, manufacturer=?, location=?, enabled=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (*fields.values(), node_id))
-            if cursor.rowcount != 1:
-                raise HTTPException(status.HTTP_404_NOT_FOUND, "Modalidade não encontrada")
-        auth.audit(int(user["id"]), "UPDATE_MODALITY", "DICOM_NODE", str(node_id), client_ip(request), "SUCCESS")
+        try:
+            with database.transaction() as connection:
+                before = connection.execute("SELECT ae_title, host, enabled FROM dicom_nodes WHERE id = ?", (node_id,)).fetchone()
+                if before is None:
+                    raise HTTPException(status.HTTP_404_NOT_FOUND, "Modalidade não encontrada")
+                connection.execute("UPDATE dicom_nodes SET name=?, description=?, ae_title=?, host=?, port=?, modality=?, manufacturer=?, location=?, enabled=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (*fields.values(), node_id))
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, "Já existe uma modalidade com esse nome") from exc
+        auth.audit(int(user["id"]), "UPDATE_MODALITY", "DICOM_NODE", str(node_id), client_ip(request), "SUCCESS", f"antes:{node_audit(before)} depois:{node_audit(fields)}")
 
     @app.delete("/api/modalities/{node_id}", status_code=status.HTTP_204_NO_CONTENT)
     async def delete_modality(node_id: int, request: Request, user: dict[str, Any] = Depends(configured_user)) -> None:
         with database.transaction() as connection:
-            cursor = connection.execute("DELETE FROM dicom_nodes WHERE id = ?", (node_id,))
-            if cursor.rowcount != 1:
+            before = connection.execute("SELECT ae_title, host, enabled FROM dicom_nodes WHERE id = ?", (node_id,)).fetchone()
+            if before is None:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "Modalidade não encontrada")
-        auth.audit(int(user["id"]), "DELETE_MODALITY", "DICOM_NODE", str(node_id), client_ip(request), "SUCCESS")
+            connection.execute("DELETE FROM dicom_nodes WHERE id = ?", (node_id,))
+        auth.audit(int(user["id"]), "DELETE_MODALITY", "DICOM_NODE", str(node_id), client_ip(request), "SUCCESS", node_audit(before))
+
+    @app.get("/api/dicom/access")
+    async def dicom_access(_: dict[str, Any] = Depends(configured_user)) -> dict[str, Any]:
+        access = current_engine.scp.access
+        return {"nodes": access.node_counts(), "learning_mode_until": access.learning_until(), "learning_max_hours": LEARNING_MAX_HOURS, "attempts": access.list_attempts()}
+
+    @app.post("/api/dicom/learning")
+    async def enable_learning(payload: LearningModePayload, request: Request, user: dict[str, Any] = Depends(configured_user)) -> dict[str, str]:
+        until = current_engine.scp.access.enable_learning(payload.hours)
+        auth.audit(int(user["id"]), "ENABLE_DICOM_LEARNING", "DICOM", None, client_ip(request), "SUCCESS", f"hours={payload.hours};until={until}")
+        return {"learning_mode_until": until}
+
+    @app.delete("/api/dicom/learning", status_code=status.HTTP_204_NO_CONTENT)
+    async def disable_learning(request: Request, user: dict[str, Any] = Depends(configured_user)) -> None:
+        current_engine.scp.access.disable_learning()
+        auth.audit(int(user["id"]), "DISABLE_DICOM_LEARNING", "DICOM", None, client_ip(request), "SUCCESS")
+
+    @app.post("/api/dicom/attempts/{attempt_id}/register", status_code=status.HTTP_201_CREATED)
+    async def register_attempt(attempt_id: int, payload: RegisterAttemptPayload, request: Request, user: dict[str, Any] = Depends(configured_user)) -> dict[str, int]:
+        """Cadastro com um clique a partir de uma tentativa registrada; é sempre ação explícita do operador."""
+        attempt = database.query_one("SELECT calling_ae, source_ip FROM dicom_access_attempts WHERE id = ?", (attempt_id,))
+        if attempt is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Tentativa não encontrada")
+        try:
+            fields = {**payload.model_dump(), "ae_title": normalize_ae_title(attempt["calling_ae"]), "host": normalize_host_network(attempt["source_ip"]), "enabled": True}
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        node_id = insert_node(fields)
+        with database.transaction() as connection:
+            connection.execute("DELETE FROM dicom_access_attempts WHERE calling_ae = ? AND source_ip = ?", (attempt["calling_ae"], attempt["source_ip"]))
+        auth.audit(int(user["id"]), "CREATE_MODALITY", "DICOM_NODE", str(node_id), client_ip(request), "SUCCESS", f"origem=aprendizado;{node_audit(fields)}")
+        return {"id": node_id}
+
+    @app.delete("/api/dicom/attempts/{attempt_id}", status_code=status.HTTP_204_NO_CONTENT)
+    async def discard_attempt(attempt_id: int, request: Request, user: dict[str, Any] = Depends(configured_user)) -> None:
+        with database.transaction() as connection:
+            if connection.execute("DELETE FROM dicom_access_attempts WHERE id = ?", (attempt_id,)).rowcount != 1:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "Tentativa não encontrada")
+        auth.audit(int(user["id"]), "DISCARD_DICOM_ATTEMPT", "DICOM", str(attempt_id), client_ip(request), "SUCCESS")
+
+    destination_identity = ("kind", "ae_title", "host", "port", "tls_enabled")
+
+    def destination_audit(row: Any) -> str:
+        return f"ae={row['ae_title']};host={row['host']};port={row['port']};tls={int(bool(row['tls_enabled']))};enabled={int(bool(row['enabled']))}"
+
+    def destination_view(row: Any) -> dict[str, Any]:
+        calling_ae = outbound_ae_title(settings)
+        return {**dict(row), "outbound_ae_title": calling_ae, "echo_valid": row["kind"] == "DICOM" and bool(calling_ae) and echo_verified(calling_ae, row)}
+
+    def get_destination(destination_id: int) -> Any:
+        row = database.query_one("SELECT * FROM destinations WHERE id = ?", (destination_id,))
+        if row is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Destino não encontrado")
+        return row
 
     @app.get("/api/destinations")
     async def list_destinations(_: dict[str, Any] = Depends(configured_user)) -> list[dict[str, Any]]:
-        return [dict(row) for row in database.query_all("SELECT * FROM destinations ORDER BY priority, name")]
+        return [destination_view(row) for row in database.query_all("SELECT * FROM destinations ORDER BY priority, name")]
 
     @app.post("/api/destinations", status_code=status.HTTP_201_CREATED)
     async def create_destination(payload: DestinationPayload, request: Request, user: dict[str, Any] = Depends(configured_user)) -> dict[str, int]:
         values = payload.model_dump()
-        if values["kind"] == "DICOM" and not (values["ae_title"] and values["host"] and values["port"]):
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Destino DICOM exige AE Title, host e porta")
         try:
             with database.transaction() as connection:
-                cursor = connection.execute("INSERT INTO destinations(name, kind, ae_title, host, port, endpoint, tls_enabled, priority, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", tuple(values.values()))
+                # Todo destino novo nasce PAUSED (enabled = 0).
+                cursor = connection.execute(
+                    "INSERT INTO destinations(name, kind, ae_title, host, port, tls_enabled, priority, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+                    (values["name"], values["kind"], values["ae_title"], values["host"], values["port"], int(values["tls_enabled"]), values["priority"]),
+                )
                 destination_id = int(cursor.lastrowid)
-            auth.audit(int(user["id"]), "CREATE_DESTINATION", "DESTINATION", str(destination_id), client_ip(request), "SUCCESS")
-            return {"id": destination_id}
-        except Exception as exc:
-            raise HTTPException(status.HTTP_409_CONFLICT, "Não foi possível salvar o destino") from exc
+                row = connection.execute("SELECT * FROM destinations WHERE id = ?", (destination_id,)).fetchone()
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, "Já existe um destino com esse nome") from exc
+        auth.audit(int(user["id"]), "CREATE_DESTINATION", "DESTINATION", str(destination_id), client_ip(request), "SUCCESS", destination_audit(row))
+        return {"id": destination_id}
 
     @app.put("/api/destinations/{destination_id}", status_code=status.HTTP_204_NO_CONTENT)
     async def update_destination(destination_id: int, payload: DestinationPayload, request: Request, user: dict[str, Any] = Depends(configured_user)) -> None:
         values = payload.model_dump()
+        try:
+            with database.transaction() as connection:
+                before = connection.execute("SELECT * FROM destinations WHERE id = ?", (destination_id,)).fetchone()
+                if before is None:
+                    raise HTTPException(status.HTTP_404_NOT_FOUND, "Destino não encontrado")
+                connection.execute(
+                    "UPDATE destinations SET name=?, kind=?, ae_title=?, host=?, port=?, endpoint=NULL, tls_enabled=?, priority=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (values["name"], values["kind"], values["ae_title"], values["host"], values["port"], int(values["tls_enabled"]), values["priority"], destination_id),
+                )
+                if any(before[key] != (int(values[key]) if key == "tls_enabled" else values[key]) for key in destination_identity):
+                    # Mudou para onde/como enviar: pausa e exige novo C-ECHO antes de habilitar.
+                    connection.execute("UPDATE destinations SET enabled = 0, echo_status = NULL, echo_at = NULL, echo_error = NULL, echo_target = NULL WHERE id = ?", (destination_id,))
+                after = connection.execute("SELECT * FROM destinations WHERE id = ?", (destination_id,)).fetchone()
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, "Já existe um destino com esse nome") from exc
+        auth.audit(int(user["id"]), "UPDATE_DESTINATION", "DESTINATION", str(destination_id), client_ip(request), "SUCCESS", f"antes:{destination_audit(before)} depois:{destination_audit(after)}")
+
+    @app.post("/api/destinations/{destination_id}/echo")
+    async def echo_destination(destination_id: int, request: Request, user: dict[str, Any] = Depends(configured_user)) -> dict[str, Any]:
+        row = get_destination(destination_id)
+        if row["kind"] != "DICOM":
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "C-ECHO só se aplica a destinos DICOM")
+        calling_ae = outbound_ae_title(settings)
+        connector = current_engine.transfer.dicom_connector(destination_id)
+        error: str | None = None
+        try:
+            await connector.test_echo()
+        except CloudConnectorError as exc:
+            error = str(exc)
+        except Exception:
+            LOGGER.exception("destination_echo_unexpected", destination_id=destination_id)
+            error = "ECHO_UNEXPECTED"
+        finally:
+            await connector.disconnect()
+        result = "SUCCESS" if error is None else "FAILURE"
         with database.transaction() as connection:
-            cursor = connection.execute("UPDATE destinations SET name=?, kind=?, ae_title=?, host=?, port=?, endpoint=?, tls_enabled=?, priority=?, enabled=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (*values.values(), destination_id))
-            if cursor.rowcount != 1:
+            connection.execute(
+                "UPDATE destinations SET echo_status = ?, echo_at = CURRENT_TIMESTAMP, echo_error = ?, echo_target = ? WHERE id = ?",
+                ("SUCCESS" if error is None else "FAILED", error, echo_target(calling_ae, row) if error is None else None, destination_id),
+            )
+        auth.audit(int(user["id"]), "TEST_DESTINATION_ECHO", "DESTINATION", str(destination_id), client_ip(request), result, f"calling={calling_ae};{destination_audit(row)}" + (f";erro={error}" if error else ""))
+        return destination_view(get_destination(destination_id))
+
+    @app.post("/api/destinations/{destination_id}/enable")
+    async def enable_destination(destination_id: int, request: Request, user: dict[str, Any] = Depends(configured_user)) -> dict[str, Any]:
+        with database.transaction() as connection:
+            row = connection.execute("SELECT * FROM destinations WHERE id = ?", (destination_id,)).fetchone()
+            if row is None:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "Destino não encontrado")
-        auth.audit(int(user["id"]), "UPDATE_DESTINATION", "DESTINATION", str(destination_id), client_ip(request), "SUCCESS")
+            allowed = destination_view(row)["echo_valid"]
+            if allowed:
+                connection.execute("UPDATE destinations SET enabled = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (destination_id,))
+        if not allowed:
+            auth.audit(int(user["id"]), "ENABLE_DESTINATION", "DESTINATION", str(destination_id), client_ip(request), "DENIED", "sem C-ECHO válido para a configuração atual")
+            raise HTTPException(status.HTTP_409_CONFLICT, "Execute Testar C-ECHO com sucesso antes de habilitar este destino")
+        auth.audit(int(user["id"]), "ENABLE_DESTINATION", "DESTINATION", str(destination_id), client_ip(request), "SUCCESS", destination_audit(row))
+        # Estudos que aguardavam destino entram na fila sem esperar o próximo ciclo.
+        current_engine.queue.enqueue_ready_studies()
+        return destination_view(get_destination(destination_id))
+
+    @app.post("/api/destinations/{destination_id}/pause")
+    async def pause_destination(destination_id: int, request: Request, user: dict[str, Any] = Depends(configured_user)) -> dict[str, Any]:
+        with database.transaction() as connection:
+            if connection.execute("UPDATE destinations SET enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (destination_id,)).rowcount != 1:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "Destino não encontrado")
+        auth.audit(int(user["id"]), "PAUSE_DESTINATION", "DESTINATION", str(destination_id), client_ip(request), "SUCCESS")
+        return destination_view(get_destination(destination_id))
 
     @app.delete("/api/destinations/{destination_id}", status_code=status.HTTP_204_NO_CONTENT)
     async def delete_destination(destination_id: int, request: Request, user: dict[str, Any] = Depends(configured_user)) -> None:
         with database.transaction() as connection:
-            cursor = connection.execute("DELETE FROM destinations WHERE id = ?", (destination_id,))
-            if cursor.rowcount != 1:
+            before = connection.execute("SELECT * FROM destinations WHERE id = ?", (destination_id,)).fetchone()
+            if before is None:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "Destino não encontrado")
-        auth.audit(int(user["id"]), "DELETE_DESTINATION", "DESTINATION", str(destination_id), client_ip(request), "SUCCESS")
+            connection.execute("DELETE FROM destinations WHERE id = ?", (destination_id,))
+        auth.audit(int(user["id"]), "DELETE_DESTINATION", "DESTINATION", str(destination_id), client_ip(request), "SUCCESS", destination_audit(before))
 
     @app.get("/api/studies")
     async def list_studies(limit: int = 200, _: dict[str, Any] = Depends(configured_user)) -> list[dict[str, Any]]:
@@ -448,15 +635,23 @@ def create_app(engine: RouterEngine | None = None, start_engine: bool = False) -
     async def list_queue(_: dict[str, Any] = Depends(configured_user)) -> list[dict[str, Any]]:
         return current_engine.queue.list_items()
 
+    def queue_transition(queue_id: int, action: str, transition: Any, request: Request, user: dict[str, Any]) -> None:
+        try:
+            transition(queue_id)
+        except KeyError as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Item de fila não encontrado") from exc
+        except QueueStateError as exc:
+            auth.audit(int(user["id"]), action, "QUEUE", str(queue_id), client_ip(request), "DENIED", str(exc))
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        auth.audit(int(user["id"]), action, "QUEUE", str(queue_id), client_ip(request), "SUCCESS")
+
     @app.post("/api/queue/{queue_id}/pause", status_code=status.HTTP_204_NO_CONTENT)
     async def queue_pause(queue_id: int, request: Request, user: dict[str, Any] = Depends(configured_user)) -> None:
-        current_engine.queue.pause(queue_id)
-        auth.audit(int(user["id"]), "PAUSE_QUEUE", "QUEUE", str(queue_id), client_ip(request), "SUCCESS")
+        queue_transition(queue_id, "PAUSE_QUEUE", current_engine.queue.pause, request, user)
 
     @app.post("/api/queue/{queue_id}/resume", status_code=status.HTTP_204_NO_CONTENT)
     async def queue_resume(queue_id: int, request: Request, user: dict[str, Any] = Depends(configured_user)) -> None:
-        current_engine.queue.resume(queue_id)
-        auth.audit(int(user["id"]), "RESUME_QUEUE", "QUEUE", str(queue_id), client_ip(request), "SUCCESS")
+        queue_transition(queue_id, "RESUME_QUEUE", current_engine.queue.resume, request, user)
 
     @app.post("/api/queue/{queue_id}/retry", status_code=status.HTTP_204_NO_CONTENT)
     async def queue_retry(queue_id: int, request: Request, user: dict[str, Any] = Depends(configured_user)) -> None:

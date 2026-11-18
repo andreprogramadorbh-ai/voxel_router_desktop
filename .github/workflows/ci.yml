@@ -11,8 +11,13 @@ permissions:
 
 jobs:
   test:
-    name: Python 3.12 tests
-    runs-on: ubuntu-latest
+    name: Python 3.12 tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # windows-latest exercita DPAPI (pywin32) e demais caminhos específicos do Windows.
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
