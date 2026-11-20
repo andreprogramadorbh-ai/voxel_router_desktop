@@ -1,7 +1,10 @@
-; VOXEL ROUTER DESKTOP — instalador único Windows (Inno Setup 6)
-; Pré-requisito de build: vendor\orthanc\Orthanc.exe e plugins homologados.
+﻿; VOXEL ROUTER DESKTOP — instalador único Windows (Inno Setup 6)
+; Pré-requisitos de build: vendor\orthanc\Orthanc.exe (+ plugins) e vendor\wireguard\wireguard-installer.msi
+; homologados, conferidos por SHA-256 (e Authenticode no MSI) em scripts\build_windows.ps1.
 #define AppName "VOXEL Router"
-#define AppVersion "1.0.0"
+#ifndef AppVersion
+  #define AppVersion "1.1.0"
+#endif
 #define AppPublisher "VOXEL"
 #define RouterExeName "VOXELRouter.exe"
 #define RouterServiceExeName "VOXELRouterService.exe"
@@ -43,6 +46,8 @@ Source: "..\dist\VOXELDiagnostics\*"; DestDir: "{app}"; Flags: recursesubdirs ig
 Source: "..\vendor\orthanc\*"; DestDir: "{app}\orthanc"; Flags: recursesubdirs ignoreversion; Check: not OrthancInstallationWasValid
 Source: "..\config\default.json"; DestDir: "{commonappdata}\VOXEL\Router\config"; DestName: "router.json"; Flags: onlyifdoesntexist
 Source: "..\frontend\static\img\router.ico"; DestDir: "{app}\assets"; Flags: ignoreversion
+; WireGuard for Windows oficial: instalado só se ainda não existir; nunca removido na desinstalação.
+Source: "..\vendor\wireguard\wireguard-installer.msi"; DestDir: "{tmp}"; Flags: deleteafterinstall
 
 [Dirs]
 Name: "{commonappdata}\VOXEL\Router\config"
@@ -56,6 +61,7 @@ Name: "{commonappdata}\VOXEL\Router\orthanc\database"
 Name: "{commonappdata}\VOXEL\Router\certificates"
 Name: "{commonappdata}\VOXEL\Router\cache"
 Name: "{commonappdata}\VOXEL\Router\backup"
+Name: "{commonappdata}\VOXEL\Router\vpn"
 
 [Icons]
 Name: "{group}\VOXEL Router"; Filename: "http://127.0.0.1:8765"; IconFilename: "{app}\assets\router.ico"
@@ -73,27 +79,26 @@ Filename: "sc.exe"; Parameters: "stop {#RouterServiceName}"; Flags: runhidden wa
 Filename: "sc.exe"; Parameters: "stop {#OrthancServiceName}"; Flags: runhidden waituntilterminated
 Filename: "{app}\{#RouterServiceExeName}"; Parameters: "remove"; Flags: runhidden waituntilterminated; Check: FileExists(ExpandConstant('{app}\{#RouterServiceExeName}'))
 Filename: "{app}\{#OrthancServiceExeName}"; Parameters: "remove"; Flags: runhidden waituntilterminated; Check: FileExists(ExpandConstant('{app}\{#OrthancServiceExeName}'))
-Filename: "netsh.exe"; Parameters: "advfirewall firewall delete rule name=\"VOXEL Router DICOM SCP\""; Flags: runhidden waituntilterminated
-Filename: "netsh.exe"; Parameters: "advfirewall firewall delete rule name=\"VOXEL Orthanc DICOM\""; Flags: runhidden waituntilterminated
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""VOXEL Router DICOM SCP"""; Flags: runhidden waituntilterminated
+; Regra legada da 4243 (instalações anteriores à Fase 4).
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""VOXEL Orthanc DICOM"""; Flags: runhidden waituntilterminated
 
 [Code]
 var
-  InstallVerified: Boolean;
+  InstallationVerified: Boolean;
   OrthancInstallationWasValid: Boolean;
 
-function CmdLineHasSilentFlag(): Boolean;
-begin
-  Result := CmdLineParamExists('/S') or CmdLineParamExists('/VERYSILENT') or CmdLineParamExists('/SILENT');
-end;
-
+{ /SILENT e /VERYSILENT são tratados pelo próprio Inno Setup (WizardSilent()). }
 function InitializeSetup(): Boolean;
 begin
-  if CmdLineHasSilentFlag() then begin
-    WizardSilent := True;
-    Silent := True;
-  end;
-  InstallVerified := False;
+  InstallationVerified := False;
   Result := True;
+end;
+
+{ Usado em [Run] Check: o Dashboard só abre se a instalação foi verificada. }
+function InstallVerified(): Boolean;
+begin
+  Result := InstallationVerified;
 end;
 
 function ExecuteAndCheck(const Filename, Parameters, Description: String): Boolean;
@@ -133,12 +138,31 @@ begin
     ServiceExists('{#OrthancServiceName}');
 end;
 
+{ Porta TCP já escutando nesta máquina (netstat + findstr; ResultCode 0 = encontrou). }
+function PortInUse(const Port: String): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := Exec(ExpandConstant('{cmd}'), '/C netstat -ano -p TCP | findstr /R /C:":' + Port + ' .*LISTENING"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+  Log('Porta ' + Port + ' em uso: ' + BoolText(Result));
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
+  Result := '';
+  { Clínicas podem já ter outro PACS/Orthanc na máquina. Instalação nova não sobe em cima de portas
+    ocupadas (o Router e o Orthanc local falhariam ao iniciar). Em atualização as portas são nossas. }
+  if not ServiceExists('{#RouterServiceName}') and PortInUse('4242') then begin
+    Result := 'A porta 4242/TCP (recepção DICOM do VOXEL Router) já está em uso por outro programa nesta máquina (outro PACS ou Orthanc?). Pare esse serviço ou use outra máquina e execute o instalador de novo.';
+    exit;
+  end;
+  if not ServiceExists('{#OrthancServiceName}') and PortInUse('8042') then begin
+    Result := 'A porta 8042/TCP (Orthanc local do VOXEL Router) já está em uso por outro programa nesta máquina (outro Orthanc?). Pare esse serviço ou use outra máquina e execute o instalador de novo.';
+    exit;
+  end;
   OrthancInstallationWasValid := OrthancInstallationIsValid();
   if OrthancInstallationWasValid then
-    Log('Orthanc válido detectado: binário, configuração e serviço em execução serão preservados.');
-  Result := '';
+    Log('Orthanc válido detectado: binário, storage e senha interna serão preservados; orthanc.json é regenerado.');
 end;
 
 function RunCritical(const Filename, Parameters, Component: String): Boolean;
@@ -170,6 +194,11 @@ begin
   end;
 end;
 
+function WireGuardInstalled(): Boolean;
+begin
+  Result := FileExists(ExpandConstant('{commonpf64}\WireGuard\wireguard.exe')) and FileExists(ExpandConstant('{commonpf64}\WireGuard\wg.exe'));
+end;
+
 procedure StopServiceIfInstalled(const ServiceName: String);
 begin
   if ServiceExists(ServiceName) then begin
@@ -179,6 +208,7 @@ end;
 
 procedure LogExistingInstallation();
 begin
+  Log('Detecção WireGuard: ' + BoolText(WireGuardInstalled()));
   Log('Detecção Router: ' + BoolText(FileExists(ExpandConstant('{app}\{#RouterExeName}'))));
   Log('Detecção Orthanc: ' + BoolText(FileExists(ExpandConstant('{app}\orthanc\Orthanc.exe'))));
   Log('Detecção configuração: ' + BoolText(FileExists(ExpandConstant('{commonappdata}\VOXEL\Router\config\orthanc.json'))));
@@ -190,7 +220,7 @@ end;
 
 procedure SetInstallationIncomplete();
 begin
-  InstallVerified := False;
+  InstallationVerified := False;
   WizardForm.FinishedLabel.Caption :=
     'A instalação requer diagnóstico adicional. O Dashboard não será aberto automaticamente. ' +
     'Use o atalho Diagnóstico de instalação depois de corrigir a falha do componente informado.';
@@ -216,12 +246,11 @@ begin
       exit;
     end;
 
-    { Preserva orthanc.json existente em updates; cria somente na primeira instalação. }
-    if not FileExists(ExpandConstant('{commonappdata}\VOXEL\Router\config\orthanc.json')) then begin
-      if not RunCritical(ExpandConstant('{app}\{#OrthancServiceExeName}'), '--configure', 'Configurar Orthanc') then begin
-        SetInstallationIncomplete();
-        exit;
-      end;
+    { Regenera orthanc.json também em atualizações: aplica DicomServerEnabled=false e REST só em
+      loopback. A senha interna vem do cofre DPAPI e é reaproveitada; storage e índice não mudam. }
+    if not RunCritical(ExpandConstant('{app}\{#OrthancServiceExeName}'), '--configure', 'Configurar Orthanc') then begin
+      SetInstallationIncomplete();
+      exit;
     end;
 
     if not ServiceExists('{#OrthancServiceName}') then begin
@@ -234,13 +263,33 @@ begin
       SetInstallationIncomplete();
       exit;
     end;
-    if not ServiceRunning('{#OrthancServiceName}') then begin
+    if ServiceRunning('{#OrthancServiceName}') then begin
+      { Orthanc preservado em execução: reinicia para carregar o orthanc.json regenerado. }
+      if not RunCritical(ExpandConstant('{app}\{#OrthancServiceExeName}'), 'restart', 'Reiniciar VOXEL Orthanc') then begin
+        SetInstallationIncomplete();
+        exit;
+      end;
+    end else begin
       if not RunCritical('sc.exe', 'start {#OrthancServiceName}', 'Iniciar VOXEL Orthanc') then begin
         SetInstallationIncomplete();
         exit;
       end;
     end;
     if not RunCritical(ExpandConstant('{app}\{#DiagnosticsExeName}'), '--component orthanc', 'Verificar VOXEL Orthanc') then begin
+      SetInstallationIncomplete();
+      exit;
+    end;
+
+    { WireGuard for Windows (túnel VOXEL VPN). Instala silenciosamente só se ausente; o túnel em si é
+      configurado depois, pela página VOXEL VPN do Router, com o kit do VOXEL PACS. }
+    if not WireGuardInstalled() then begin
+      if not RunCritical(ExpandConstant('{sys}\msiexec.exe'), '/i "' + ExpandConstant('{tmp}\wireguard-installer.msi') + '" /qn /norestart DO_NOT_LAUNCH=1', 'Instalar WireGuard for Windows') then begin
+        SetInstallationIncomplete();
+        exit;
+      end;
+    end;
+    if not WireGuardInstalled() then begin
+      Log('WireGuard não encontrado após a instalação.');
       SetInstallationIncomplete();
       exit;
     end;
@@ -264,16 +313,35 @@ begin
       exit;
     end;
 
-    ExecuteAndCheck('netsh.exe', 'advfirewall firewall add rule name=\"VOXEL Router DICOM SCP\" dir=in action=allow protocol=TCP localport=4242 profile=private', 'Configurar firewall Router');
-    ExecuteAndCheck('netsh.exe', 'advfirewall firewall add rule name=\"VOXEL Orthanc DICOM\" dir=in action=allow protocol=TCP localport=4243 profile=private', 'Configurar firewall Orthanc');
+    { Firewall: só 4242/TCP de entrada, perfis Domínio e Privada (nunca Pública). A regra antiga da
+      4243 (Orthanc DICOM, hoje desligado) é removida, inclusive em atualizações. Remover antes de
+      criar evita regra duplicada ou com perfil antigo. A falha da exclusão (regra inexistente) só é registrada. }
+    ExecuteAndCheck(ExpandConstant('{sys}\netsh.exe'), 'advfirewall firewall delete rule name="VOXEL Orthanc DICOM"', 'Remover regra legada Orthanc 4243');
+    ExecuteAndCheck(ExpandConstant('{sys}\netsh.exe'), 'advfirewall firewall delete rule name="VOXEL Router DICOM SCP"', 'Remover regra anterior Router 4242');
+    if not RunCritical(ExpandConstant('{sys}\netsh.exe'), 'advfirewall firewall add rule name="VOXEL Router DICOM SCP" dir=in action=allow protocol=TCP localport=4242 profile=domain,private', 'Configurar firewall Router 4242 (Domínio/Privada)') then begin
+      SetInstallationIncomplete();
+      exit;
+    end;
 
     if not RunCritical(ExpandConstant('{app}\{#DiagnosticsExeName}'), '', 'Diagnóstico final Router e Orthanc') then begin
       SetInstallationIncomplete();
       exit;
     end;
-    InstallVerified := True;
+    InstallationVerified := True;
   end;
 end;
 
 { Nenhum diretório em ProgramData é removido na desinstalação normal. Estudos DICOM, índices,
   fila, logs e configurações permanecem disponíveis para atualização, recuperação ou rollback. }
+
+{ Desinstalação: o WireGuard e outros túneis da máquina ficam. Só o túnel VOXELVPN é removido, e só se
+  o operador confirmar (em desinstalação silenciosa ele é mantido). }
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ResultCode: Integer;
+begin
+  if (CurUninstallStep = usUninstall) and ServiceExists('WireGuardTunnel$VOXELVPN') and not UninstallSilent() then begin
+    if MsgBox('Remover também o túnel VOXEL VPN (VOXELVPN)? O WireGuard continuará instalado.', mbConfirmation, MB_YESNO) = IDYES then
+      Exec(ExpandConstant('{commonpf64}\WireGuard\wireguard.exe'), '/uninstalltunnelservice VOXELVPN', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
+end;

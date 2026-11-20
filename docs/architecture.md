@@ -15,7 +15,7 @@ O VOXEL Router Desktop é um *DICOM Edge Router*. Ele recebe objetos DICOM por C
 | Router API e Engine | API FastAPI local, autenticação, SCP, fila, transmissão, retenção e *health checks* | Serviço **VOXEL Router** (`VOXELRouterService.exe`) |
 | Router launcher | Processo de diagnóstico e desenvolvimento local | `VOXELRouter.exe` |
 | DICOM SCP | C-ECHO/C-STORE local, checksum, deduplicação e descoberta de estudos | Processo do serviço Router, `4242/TCP` |
-| Orthanc local | Armazenamento temporário DICOM, consulta e REST API | Serviço **VOXEL Orthanc** (`VOXELOrthancService.exe` → `Orthanc.exe`), `4243/TCP` e `127.0.0.1:8042` |
+| Orthanc local | Armazenamento temporário DICOM, consulta e REST API | Serviço **VOXEL Orthanc** (`VOXELOrthancService.exe` → `Orthanc.exe`), REST `127.0.0.1:8042` com autenticação; servidor DICOM desligado |
 | SQLite | Estado administrativo, auditoria, sessões, fila e metadados | Arquivo em `ProgramData` |
 
 ## Fluxo de dados
@@ -56,7 +56,7 @@ Segredos de cloud nunca integram o frontend, o banco de configuração ou logs. 
 
 ## Resiliência e recuperação
 
-A ordem de instalação/inicialização é: preparar storage e configuração persistente; instalar/iniciar o serviço Orthanc; confirmar sua REST local; instalar/iniciar o serviço Router; confirmar `/health`; somente então liberar o Dashboard. A Engine do Router não inicia nem incorpora o processo Orthanc. A política padrão de retry é `30 s`, `120 s`, `300 s` e `900 s`, limitada a quatro tentativas. O estudo só entra em retenção elegível após `VALIDATED`; a remoção exige política explícita de retenção, e nunca ocorre na desinstalação sem escolha do operador.
+A ordem de instalação/inicialização é: preparar storage e configuração persistente; instalar/iniciar o serviço Orthanc; confirmar sua REST local; instalar/iniciar o serviço Router; confirmar `/health`; somente então liberar o Dashboard. A Engine do Router não inicia nem incorpora o processo Orthanc. A política de retry separa conectividade de rejeição: falhas de rede, timeout, associação não estabelecida ou túnel fora ficam em `RETRY` sem limite de tentativas, com espera de `30 s`, `120 s`, `300 s`, `900 s` e depois `900 s` fixo (teto de 15 min); rejeição definitiva (status de falha no C-STORE, objeto local ausente/corrompido, destino inválido) vai para `ERROR` com código. O dashboard alerta quando uma pendência passa de `queue.pending_alert_minutes` (padrão 60) e mostra o último envio com sucesso. O estudo só entra em retenção elegível após `VALIDATED`; a remoção exige política explícita de retenção, e nunca ocorre na desinstalação sem escolha do operador.
 
 ## Integrações substituíveis
 
@@ -64,7 +64,7 @@ A ordem de instalação/inicialização é: preparar storage e configuração pe
 
 ## Implantação Windows
 
-O artefato único `VOXEL_ROUTER_SETUP.exe` provisiona os binários independentes Router e Orthanc, gera `orthanc.json` no destino, registra serviços Windows separados, cria regras mínimas de firewall para `4242/TCP` e `4243/TCP`, executa diagnóstico de portas/health e oferece atalhos. Dados operacionais são mantidos em `C:\ProgramData\VOXEL\Router`; binários em `C:\Program Files\VOXEL\Router`. O instalador Inno Setup oferece modo silencioso `/S` e a desinstalação preserva dados salvo consentimento explícito.
+O artefato único `VOXEL_ROUTER_SETUP.exe` provisiona os binários independentes Router e Orthanc, gera `orthanc.json` no destino, registra serviços Windows separados, cria uma única regra de entrada, `4242/TCP` nos perfis Domínio e Privada (remove a regra legada da `4243/TCP`), executa diagnóstico de portas/health e oferece atalhos. Dados operacionais são mantidos em `C:\ProgramData\VOXEL\Router`; binários em `C:\Program Files\VOXEL\Router`. O instalador Inno Setup oferece modo silencioso `/S` e a desinstalação preserva dados salvo consentimento explícito.
 
 ## Impacto, risco e rollback
 

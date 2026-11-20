@@ -14,7 +14,7 @@ Este guia orienta diagnóstico operacional sem apagar estudos, expor credenciais
 
 ## DICOM SCP sem associação
 
-Confirme se a modalidade usa o AE Title local correto, padrão `VOXEL_ROUTER`, e porta TCP configurada, padrão `4242`. Valide `C-ECHO` antes de C-STORE. Revise a regra de firewall `VOXEL Router DICOM SCP` e assegure que ela se aplica somente ao perfil privado aprovado. Não abra a porta da API de administração, que deve permanecer em loopback.
+Confirme se a modalidade usa o AE Title local correto, padrão `VOXEL_ROUTER`, e porta TCP configurada, padrão `4242`. Valide `C-ECHO` antes de C-STORE. Revise a regra de firewall `VOXEL Router DICOM SCP` e assegure que ela se aplica só aos perfis Domínio e Privada. Se a rede da clínica estiver como Pública, a regra não vale: altere o perfil da rede (o diagnóstico de instalação avisa). Não abra a porta da API de administração, que deve permanecer em loopback.
 
 Se a associação chega, mas C-STORE falha, revise o código de retorno DICOM e os logs das categorias `DICOM` e `ORTHANC`. UIDs inválidos, arquivo corrompido ou Orthanc indisponível devem impedir a confirmação indevida. Preserve o objeto original e não altere sua codificação manualmente.
 
@@ -49,3 +49,14 @@ Anexe somente logs sanitizados de `C:\ProgramData\VOXEL\Router\logs\router.jsonl
 [1]: https://www.orthanc-server.com/static.php?page=users-manual "Orthanc Book — User Manual"
 [2]: https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html "OWASP Logging Cheat Sheet"
 [3]: https://www.dicomstandard.org/current/ "DICOM Standard"
+
+## VOXEL VPN
+
+| Status na página VOXEL VPN | Causa provável | Ação |
+|---|---|---|
+| WIREGUARD AUSENTE | WireGuard for Windows não instalado | Reexecutar o instalador do Router (instala o WireGuard se ausente). |
+| AGUARDANDO KIT | Chaves geradas, kit não importado | Enviar a chave pública ao VOXEL e importar o kit recebido. |
+| SEM HANDSHAKE | Serviço ativo sem resposta do concentrador | Liberar saída UDP para o endpoint do kit; confirmar com o VOXEL que a chave pública desta máquina foi cadastrada. |
+| PARADO | Serviço `WireGuardTunnel$VOXELVPN` parado ou handshake > 10 min | `sc query "WireGuardTunnel$VOXELVPN"`; reaplicar o kit se o serviço não existir. |
+| C-ECHO `DESTINATION_UNAVAILABLE` com túnel ATIVO | Porta/host DICOM do kit errados ou célula sem rota | Conferir host `10.200.10.1` e porta do kit; abrir chamado VOXEL com a chave de rota. |
+| C-ECHO `DESTINATION_REJECTED` | Called/Calling AE diferentes do cadastrado na célula | Conferir os AEs do kit; o Calling AE vira o AE de saída do Router. |

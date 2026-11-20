@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# Versão do software (router.json guarda a versão da primeira instalação).
+APP_VERSION = "1.1.0"
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "default.json"
 
 
@@ -98,6 +100,11 @@ class Settings:
             return values
         with self.path.open("r", encoding="utf-8") as source:
             values = json.load(source)
+        # Atualização: seções novas do padrão (ex.: "vpn") entram sem tocar nas existentes.
+        missing = {name: value for name, value in self._load_default().items() if name not in values}
+        if missing:
+            values.update(missing)
+            self._write(values)
         if not values.get("system", {}).get("router_id"):
             values.setdefault("system", {})["router_id"] = self._router_id()
             self._write(values)

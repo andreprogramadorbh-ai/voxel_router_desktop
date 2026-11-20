@@ -50,6 +50,19 @@ class OrthancClient:
             response.raise_for_status()
             return response.json().get("ID")
 
+    def delete_instance_sync(self, orthanc_instance_id: str) -> bool:
+        """Remove a instância pela REST; 404 conta como já removida. Nunca apaga arquivos do storage direto."""
+        try:
+            with httpx.Client(timeout=self.timeout, auth=self.auth) as client:
+                response = client.delete(f"{self.base_url}/instances/{orthanc_instance_id}")
+        except httpx.HTTPError as exc:
+            LOGGER.warning("orthanc_delete_failed", error=type(exc).__name__)
+            return False
+        if response.status_code in (200, 404):
+            return True
+        LOGGER.warning("orthanc_delete_failed", status_code=response.status_code)
+        return False
+
     async def study(self, orthanc_study_id: str) -> dict[str, Any]:
         return await self._get(f"/studies/{orthanc_study_id}")
 

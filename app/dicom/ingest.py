@@ -51,7 +51,7 @@ class DicomIngestor:
         with self.database.transaction() as connection:
             duplicate = connection.execute("SELECT id, study_id, sha256 FROM instances WHERE sop_instance_uid = ?", (sop_uid,)).fetchone()
             if duplicate:
-                LOGGER.info("dicom_duplicate", sop_instance_uid=sop_uid, study_instance_uid=study_uid, same_checksum=duplicate["sha256"] == sha256)
+                LOGGER.info("dicom_duplicate", instance_id=duplicate["id"], study_id=duplicate["study_id"], same_checksum=duplicate["sha256"] == sha256)
                 connection.execute(
                     "INSERT INTO system_events(category, severity, code, message, details) VALUES (?, ?, ?, ?, ?)",
                     ("DICOM", "WARNING", "DICOM_DUPLICATE", "Instância DICOM duplicada recebida", f"sop={sop_uid};same_checksum={duplicate['sha256'] == sha256}"),
@@ -68,7 +68,8 @@ class DicomIngestor:
                 study_id = int(cursor.lastrowid)
             else:
                 study_id = int(study["id"])
-                connection.execute("UPDATE studies SET last_instance_at = ?, status = CASE WHEN status IN ('SENT','VALIDATED') THEN status ELSE 'RECEIVED' END WHERE id = ?", (now, study_id))
+                # Instância nova sempre volta o estudo a RECEIVED, inclusive se já entregue (série tardia é reenviada).
+                connection.execute("UPDATE studies SET last_instance_at = ?, status = 'RECEIVED' WHERE id = ?", (now, study_id))
 
             series = connection.execute("SELECT id FROM series WHERE series_instance_uid = ?", (series_uid,)).fetchone()
             if series is None:
@@ -91,7 +92,7 @@ class DicomIngestor:
             )
 
         self._store_object(sha256, raw_bytes)
-        LOGGER.info("dicom_received", study_instance_uid=study_uid, sop_instance_uid=sop_uid, size_bytes=size, sha256=sha256)
+        LOGGER.info("dicom_received", study_id=study_id, size_bytes=size, sha256=sha256)
         return {"accepted": True, "duplicate": False, "study_instance_uid": study_uid, "sop_instance_uid": sop_uid, "sha256": sha256, "size_bytes": size}
 
     def attach_orthanc_instance(self, sop_instance_uid: str, orthanc_instance_id: str) -> None:

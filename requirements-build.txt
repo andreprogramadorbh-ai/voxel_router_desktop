@@ -1,0 +1,33 @@
+# Constraints do build Windows (pip install -c requirements-build.txt).
+# Versões exatas das dependências de runtime validadas pela suíte de testes (2026-11-18).
+# O build grava o "pip freeze" efetivo em dist\build-freeze.txt para rastreabilidade.
+annotated-types==0.8.0
+anyio==4.16.0
+argon2-cffi==23.1.0
+argon2-cffi-bindings==26.2.0
+certifi==2026.10.23
+cffi==2.1.1
+click==8.5.1
+cryptography==44.0.3
+defusedxml==0.7.1
+fastapi==0.165.0
+h11==0.16.0
+httpcore==1.0.9
+httptools==0.9.0
+httpx==0.28.1
+idna==3.20
+psutil==6.1.1
+pycparser==3.12
+pydantic==2.14.3
+pydantic_core==2.50.4
+pydicom==3.0.2
+pynetdicom==3.0.4
+python-dotenv==1.2.4
+PyYAML==6.0.3
+starlette==1.10.0
+structlog==25.5.0
+typing-inspection==0.4.5
+typing_extensions==4.16.0
+uvicorn==0.54.0
+watchfiles==1.3.0
+websockets==17.4

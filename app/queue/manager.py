@@ -11,6 +11,23 @@ from app.core.logging import get_logger
 
 LOGGER = get_logger(__name__)
 
+DEFAULT_RETRY_DELAYS_SECONDS = (30, 120, 300, 900)
+# Teto do backoff: nenhuma espera entre tentativas passa de 15 minutos.
+MAX_RETRY_DELAY_SECONDS = 900
+# Falhas que continuam em RETRY, mas alertam já na primeira ocorrência: não são queda de rede.
+IMMEDIATE_ALERTS = {
+    "DESTINATION_REJECTED": "O VOXEL recusou a conexão — verifique o Calling AE cadastrado na célula.",
+    "TRANSFER_UNEXPECTED": "Falha interna do Router — contate o suporte.",
+    "DESTINATION_NOT_VERIFIED": "Destino sem C-ECHO válido para a configuração atual — use Testar C-ECHO em Destinos.",
+    "OUTBOUND_AE_NOT_CONFIGURED": "AE de saída (Calling AE) não configurado — defina-o em DICOM local.",
+}
+# Item já entregue (SENT, ou estudo VALIDATED) ou cancelado não pode ser pausado: retomá-lo reenviaria o estudo.
+_PAUSABLE = "status NOT IN ('SENT', 'CANCELLED', 'PAUSED') AND study_id NOT IN (SELECT id FROM studies WHERE status = 'VALIDATED')"
+
+
+class QueueStateError(ValueError):
+    """Transição de fila não permitida no estado atual do item."""
+
 
 @dataclass(frozen=True)
 class QueueItem:
@@ -24,10 +41,17 @@ class QueueItem:
 
 
 class QueueManager:
-    def __init__(self, database: Database, retry_delays_seconds: list[int], max_attempts: int) -> None:
+    def __init__(self, database: Database, retry_delays_seconds: list[int] | None = None, pending_alert_minutes: int = 60) -> None:
+        """Falhas de conectividade ficam em RETRY sem limite de tentativas; só rejeição definitiva vai a ERROR."""
         self.database = database
-        self.retry_delays_seconds = retry_delays_seconds
-        self.max_attempts = max_attempts
+        delays = [min(max(int(delay), 1), MAX_RETRY_DELAY_SECONDS) for delay in (retry_delays_seconds or [])]
+        self.retry_delays_seconds = delays or list(DEFAULT_RETRY_DELAYS_SECONDS)
+        self.pending_alert_minutes = max(1, int(pending_alert_minutes))
+
+    def retry_delay(self, attempt_count: int) -> int:
+        """Backoff por tentativa (30 s, 2 min, 5 min, 15 min) e depois 15 min fixo."""
+        index = min(max(attempt_count, 1) - 1, len(self.retry_delays_seconds) - 1)
+        return self.retry_delays_seconds[index]
 
     def recover_after_restart(self) -> int:
         """Nunca deixa itens presos em SENDING depois de uma queda de processo ou reboot."""
@@ -62,8 +86,12 @@ class QueueManager:
             added = 0
             for study in studies:
                 for destination in destinations:
+                    # Item já entregue volta à fila quando o estudo recebeu instâncias depois do envio.
                     cursor = connection.execute(
-                        "INSERT OR IGNORE INTO queue(study_id, destination_id, priority, status) VALUES (?, ?, ?, 'QUEUED')",
+                        """INSERT INTO queue(study_id, destination_id, priority, status) VALUES (?, ?, ?, 'QUEUED')
+                           ON CONFLICT(study_id, destination_id) DO UPDATE SET status = 'QUEUED', attempt_count = 0,
+                           next_attempt_at = CURRENT_TIMESTAMP, completed_at = NULL, locked_at = NULL, updated_at = CURRENT_TIMESTAMP
+                           WHERE queue.status = 'SENT'""",
                         (study["id"], destination["id"], destination["priority"]),
                     )
                     added += max(cursor.rowcount, 0)
@@ -89,21 +117,27 @@ class QueueManager:
 
     def complete(self, item: QueueItem, bytes_sent: int, instances_sent: int, remote_reference: str | None = None, validation_reference: str | None = None) -> None:
         with self.database.transaction() as connection:
+            # Instância chegada durante o envio: o estudo tem mais objetos do que os enviados e volta a RECEIVED.
+            connection.execute(
+                """UPDATE studies SET status = CASE WHEN (SELECT COUNT(*) FROM instances WHERE study_id = ?) > ? THEN 'RECEIVED' ELSE 'VALIDATED' END,
+                   sent_at = CURRENT_TIMESTAMP, validated_at = CURRENT_TIMESTAMP, last_error_code = NULL, last_error_message = NULL WHERE id = ?""",
+                (item.study_id, instances_sent, item.study_id),
+            )
             connection.execute("UPDATE queue SET status = 'SENT', completed_at = CURRENT_TIMESTAMP, locked_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (item.id,))
-            connection.execute("UPDATE studies SET status = 'VALIDATED', sent_at = CURRENT_TIMESTAMP, validated_at = CURRENT_TIMESTAMP, last_error_code = NULL, last_error_message = NULL WHERE id = ?", (item.study_id,))
             connection.execute("UPDATE queue_attempts SET finished_at = CURRENT_TIMESTAMP, success = 1 WHERE queue_id = ? AND attempt_number = ?", (item.id, item.attempt_count))
             connection.execute("INSERT INTO transfers(queue_id, completed_at, bytes_sent, instances_sent, status, remote_reference, validation_reference) VALUES (?, CURRENT_TIMESTAMP, ?, ?, 'SUCCESS', ?, ?)", (item.id, bytes_sent, instances_sent, remote_reference, validation_reference))
-        LOGGER.info("queue_item_completed", queue_id=item.id, study_instance_uid=item.study_instance_uid, bytes_sent=bytes_sent)
+        LOGGER.info("queue_item_completed", queue_id=item.id, bytes_sent=bytes_sent)
 
-    def fail(self, item: QueueItem, error_code: str, error_message: str) -> str:
+    def fail(self, item: QueueItem, error_code: str, error_message: str, permanent: bool = False) -> str:
+        """Conectividade (permanent=False) -> RETRY sem limite; rejeição definitiva -> ERROR."""
         sanitized = error_message[:500]
         with self.database.transaction() as connection:
-            if item.attempt_count >= self.max_attempts:
+            if permanent:
                 status = "ERROR"
                 next_attempt = None
             else:
                 status = "RETRY"
-                delay = self.retry_delays_seconds[min(item.attempt_count - 1, len(self.retry_delays_seconds) - 1)]
+                delay = self.retry_delay(item.attempt_count)
                 next_attempt = (datetime.now(UTC) + timedelta(seconds=delay)).strftime("%Y-%m-%d %H:%M:%S")
             if next_attempt:
                 connection.execute("UPDATE queue SET status = ?, next_attempt_at = ?, locked_at = NULL, last_error_code = ?, last_error_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (status, next_attempt, error_code, sanitized, item.id))
@@ -112,18 +146,21 @@ class QueueManager:
             connection.execute("UPDATE studies SET status = ?, last_error_code = ?, last_error_message = ? WHERE id = ?", (status, error_code, sanitized, item.study_id))
             connection.execute("UPDATE queue_attempts SET finished_at = CURRENT_TIMESTAMP, success = 0, error_code = ?, error_message = ? WHERE queue_id = ? AND attempt_number = ?", (error_code, sanitized, item.id, item.attempt_count))
             connection.execute("INSERT INTO transfers(queue_id, completed_at, status) VALUES (?, CURRENT_TIMESTAMP, 'FAILED')", (item.id,))
-            connection.execute("INSERT INTO errors(code, category, message, study_id) VALUES (?, 'TRANSFER', ?, ?)", (error_code, sanitized, item.study_id))
-        LOGGER.warning("queue_item_failed", queue_id=item.id, error_code=error_code, next_status=status)
+            if permanent:
+                # A tabela errors registra o que exige ação do operador; falhas de rede ficam em queue_attempts.
+                connection.execute("INSERT INTO errors(code, category, message, study_id) VALUES (?, 'TRANSFER', ?, ?)", (error_code, sanitized, item.study_id))
+        LOGGER.warning("queue_item_failed", queue_id=item.id, error_code=error_code, next_status=status, attempt=item.attempt_count)
         return status
 
     def retry_now(self, queue_id: int) -> None:
         self._transition(queue_id, "RETRY", "UPDATE queue SET status = 'RETRY', next_attempt_at = CURRENT_TIMESTAMP, locked_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
 
     def pause(self, queue_id: int) -> None:
-        self._transition(queue_id, "PAUSED", "UPDATE queue SET status = 'PAUSED', locked_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+        self._transition(queue_id, "PAUSED", f"UPDATE queue SET status = 'PAUSED', locked_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND {_PAUSABLE}", "Item já enviado, validado ou cancelado não pode ser pausado")
 
     def resume(self, queue_id: int) -> None:
-        self._transition(queue_id, "QUEUED", "UPDATE queue SET status = 'QUEUED', next_attempt_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+        # Só retoma o que foi pausado: nunca recoloca na fila um item já enviado.
+        self._transition(queue_id, "QUEUED", "UPDATE queue SET status = 'QUEUED', next_attempt_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'PAUSED'", "Só é possível retomar um item pausado")
 
     def cancel(self, queue_id: int) -> None:
         self._transition(queue_id, "CANCELLED", "UPDATE queue SET status = 'CANCELLED', locked_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
@@ -146,10 +183,54 @@ class QueueManager:
             "retry": by_status.get("RETRY", 0),
         }
 
+    def backlog_status(self) -> dict[str, Any]:
+        """Pendência mais antiga (fila ativa ou estudo pronto sem fila) e último envio confirmado."""
+        # PAUSED fica de fora: é decisão explícita do operador, não atraso de envio.
+        pending = self.database.query_one(
+            """SELECT COUNT(*) AS pending_count, MIN(since) AS oldest_pending_at,
+                   CAST((julianday('now') - julianday(MIN(since))) * 1440 AS INTEGER) AS oldest_pending_minutes
+               FROM (
+                   SELECT created_at AS since FROM queue WHERE status IN ('QUEUED', 'RETRY', 'SENDING')
+                   UNION ALL
+                   SELECT COALESCE(ready_at, last_instance_at) FROM studies WHERE status = 'READY_TO_SEND'
+               )"""
+        )
+        last = self.database.query_one("SELECT MAX(completed_at) AS last_success_at FROM transfers WHERE status = 'SUCCESS'")
+        paused = self.database.query_one("SELECT COUNT(*) AS n FROM queue WHERE status = 'PAUSED'")
+        # Consultas agregadas sempre devolvem exatamente uma linha.
+        minutes = pending["oldest_pending_minutes"]
+        delayed = minutes is not None and int(minutes) >= self.pending_alert_minutes
+        alerts = self._immediate_alerts()
+        if delayed:
+            alerts.append({
+                "code": "PENDING_DELAY",
+                "count": int(pending["pending_count"]),
+                "message": f"Envio atrasado há mais de {self.pending_alert_minutes} min. Verifique a conexão com o VOXEL.",
+            })
+        return {
+            "pending_count": int(pending["pending_count"]),
+            "paused_count": int(paused["n"]),
+            "oldest_pending_at": pending["oldest_pending_at"],
+            "oldest_pending_minutes": minutes,
+            "alert_threshold_minutes": self.pending_alert_minutes,
+            "alert": delayed,
+            "alerts": alerts,
+            "last_success_at": last["last_success_at"],
+        }
+
+    def _immediate_alerts(self) -> list[dict[str, Any]]:
+        """Itens ativos cuja última falha não é de rede comum (ver IMMEDIATE_ALERTS)."""
+        rows = self.database.query_all(
+            """SELECT last_error_code AS code, COUNT(*) AS count FROM queue
+               WHERE status IN ('QUEUED', 'RETRY', 'SENDING') AND last_error_code IN ('DESTINATION_REJECTED', 'TRANSFER_UNEXPECTED', 'DESTINATION_NOT_VERIFIED', 'OUTBOUND_AE_NOT_CONFIGURED')
+               GROUP BY last_error_code ORDER BY last_error_code"""
+        )
+        return [{"code": str(row["code"]), "count": int(row["count"]), "message": IMMEDIATE_ALERTS[str(row["code"])]} for row in rows]
+
     def list_items(self, limit: int = 200) -> list[dict[str, Any]]:
         rows = self.database.query_all(
             """SELECT q.id, q.priority, q.status, q.attempt_count, q.next_attempt_at, q.last_error_code,
-               s.study_instance_uid, s.patient_id, s.patient_name, s.modalities_in_study, s.total_bytes, s.received_at,
+               s.status AS study_status, s.study_instance_uid, s.patient_id, s.patient_name, s.modalities_in_study, s.total_bytes, s.received_at,
                d.name AS destination_name
                FROM queue q JOIN studies s ON s.id = q.study_id JOIN destinations d ON d.id = q.destination_id
                ORDER BY q.priority ASC, q.created_at DESC LIMIT ?""",
@@ -157,9 +238,11 @@ class QueueManager:
         )
         return [dict(row) for row in rows]
 
-    def _transition(self, queue_id: int, state: str, sql: str) -> None:
+    def _transition(self, queue_id: int, state: str, sql: str, refused: str = "") -> None:
         with self.database.transaction() as connection:
             cursor = connection.execute(sql, (queue_id,))
             if cursor.rowcount != 1:
-                raise KeyError("Item de fila não encontrado")
+                if connection.execute("SELECT 1 FROM queue WHERE id = ?", (queue_id,)).fetchone() is None:
+                    raise KeyError("Item de fila não encontrado")
+                raise QueueStateError(refused or "Transição de fila não permitida")
         LOGGER.info("queue_item_transition", queue_id=queue_id, state=state)

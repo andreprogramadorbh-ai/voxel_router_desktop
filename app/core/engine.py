@@ -12,12 +12,13 @@ from app.core.database import Database
 from app.core.logging import get_logger
 from app.dicom.ingest import DicomIngestor
 from app.dicom.scp import DicomScp
-from app.monitoring.health import HealthMonitor
+from app.monitoring.health import HealthMonitor, storage_status
 from app.non_dicom.worker import NonDicomWorker
 from app.orthanc.client import OrthancClient
 from app.queue.manager import QueueManager
 from app.security.secrets import SecretStoreError, WindowsSecretStore
 from app.transfer.manager import TransferManager
+from app.vpn.wireguard import WireGuardManager
 
 LOGGER = get_logger(__name__)
 
@@ -45,11 +46,18 @@ class RouterEngine:
             int(self.settings.get("dicom", "port", default=4242)),
             int(self.settings.get("dicom", "max_associations", default=8)),
             self.orthanc.store_instance_sync if bool(self.settings.get("orthanc", "enabled", default=True)) else None,
+            bind_host=str(self.settings.get("dicom", "bind_host", default="0.0.0.0")),
+            accept_storage=self.storage_accepts_new_objects,
         )
-        self.queue = QueueManager(self.database, list(self.settings.get("queue", "retry_delays_seconds", default=[30, 120, 300, 900])), int(self.settings.get("queue", "max_attempts", default=4)))
+        self.queue = QueueManager(
+            self.database,
+            list(self.settings.get("queue", "retry_delays_seconds", default=[30, 120, 300, 900])),
+            int(self.settings.get("queue", "pending_alert_minutes", default=60)),
+        )
         self.transfer = TransferManager(self.database, self.settings, self.queue)
         self.non_dicom = NonDicomWorker(self.settings, self.database)
-        self.health = HealthMonitor(self.settings, self.orthanc, self.scp, non_dicom=self.non_dicom)
+        self.vpn = WireGuardManager(self.settings)
+        self.health = HealthMonitor(self.settings, self.orthanc, self.scp, non_dicom=self.non_dicom, queue=self.queue, vpn=self.vpn)
         self._stop = asyncio.Event()
         self._tasks: list[asyncio.Task[Any]] = []
 
@@ -65,10 +73,14 @@ class RouterEngine:
         LOGGER.info("router_engine_initialized", router_id=self.settings.get("system", "router_id"), recovered_items=recovered, non_dicom_recovered=non_dicom_recovered, ready_studies=ready, enqueued_items=enqueued)
         return {"recovered": recovered, "non_dicom_recovered": non_dicom_recovered, "ready": ready, "enqueued": enqueued}
 
-    async def run(self) -> None:
-        self.initialize()
+    def start_background_tasks(self) -> None:
+        """Inicia envio, Non-DICOM, reconciliação da fila e retenção no loop asyncio atual."""
         self._stop.clear()
         self._tasks = [asyncio.create_task(self.transfer.run()), asyncio.create_task(self.non_dicom.run()), asyncio.create_task(self._reconcile_loop()), asyncio.create_task(self._retention_loop())]
+
+    async def run(self) -> None:
+        self.initialize()
+        self.start_background_tasks()
         try:
             await self._stop.wait()
         finally:
@@ -104,19 +116,48 @@ class RouterEngine:
             self.apply_retention_policy()
             await asyncio.sleep(3600)
 
+    def storage_accepts_new_objects(self) -> bool:
+        """Em emergência de disco o SCP recusa C-STORE; falha ao medir o disco não bloqueia a recepção."""
+        try:
+            return storage_status(self.settings)["status"] != "EMERGENCY"
+        except OSError:
+            LOGGER.warning("storage_status_unavailable")
+            return True
+
     def apply_retention_policy(self) -> int:
+        """Remove cópias locais (Router e Orthanc) de estudos VALIDATED há mais de `retention_hours`.
+
+        Só age com `auto_delete` ligado. Estudos em qualquer outro estado nunca são tocados. Se o
+        Orthanc não confirmar a remoção, a instância e o arquivo do Router são mantidos para nova
+        tentativa na próxima rodada.
+        """
         if not bool(self.settings.get("storage", "auto_delete", default=False)):
             return 0
         hours = int(self.settings.get("storage", "retention_hours", default=168))
-        cutoff = (datetime.now(UTC) - timedelta(hours=max(hours, 0))).strftime("%Y-%m-%d %H:%M:%S")
-        with self.database.transaction() as connection:
-            rows = connection.execute(
-                """SELECT i.id, i.sha256 FROM instances i JOIN studies s ON s.id = i.study_id
-                   WHERE s.status = 'VALIDATED' AND s.validated_at < ?""",
-                (cutoff,),
-            ).fetchall()
-            for row in rows:
-                path = self.ingestor.instance_path(str(row["sha256"]))
-                path.unlink(missing_ok=True)
+        cutoff = (datetime.now(UTC) - timedelta(hours=max(hours, 1))).strftime("%Y-%m-%d %H:%M:%S")
+        rows = self.database.query_all(
+            """SELECT i.id, i.sha256, i.orthanc_instance_id FROM instances i JOIN studies s ON s.id = i.study_id
+               WHERE s.status = 'VALIDATED' AND s.validated_at < ?""",
+            (cutoff,),
+        )
+        removed = kept = 0
+        for row in rows:
+            orthanc_id = row["orthanc_instance_id"]
+            if orthanc_id and not self.orthanc.delete_instance_sync(str(orthanc_id)):
+                kept += 1
+                continue
+            with self.database.transaction() as connection:
+                # Revalida o estado: uma série tardia pode ter reaberto o estudo desde a consulta.
+                still_validated = connection.execute(
+                    "SELECT 1 FROM instances i JOIN studies s ON s.id = i.study_id WHERE i.id = ? AND s.status = 'VALIDATED'",
+                    (row["id"],),
+                ).fetchone()
+                if still_validated is None:
+                    kept += 1
+                    continue
                 connection.execute("DELETE FROM instances WHERE id = ?", (row["id"],))
-            return len(rows)
+            self.ingestor.instance_path(str(row["sha256"])).unlink(missing_ok=True)
+            removed += 1
+        if removed or kept:
+            LOGGER.info("retention_applied", removed=removed, kept=kept)
+        return removed

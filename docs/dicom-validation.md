@@ -56,7 +56,7 @@ Use um volume de teste limitado ou limiares temporariamente baixos para ultrapas
 |---|---|
 | C-ECHO local | Sucesso DICOM `0x0000` |
 | C-STORE local | Estudo e instâncias armazenados, checksum calculado e Orthanc confirmado |
-| Queda de cloud | Estudo preservado, retry limitado e sem perda de fila |
+| Queda de cloud | Estudo preservado, retry sem limite (até 15 min entre tentativas) e sem perda de fila |
 | Reinício | Itens persistentes reconstruídos, nenhum envio fica preso em memória |
 | Duplicidade | SOP Instance UID não é duplicado e há evento operacional |
 | Storage | Alertas aparecem nos limiares configurados |
